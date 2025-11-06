@@ -3,18 +3,34 @@ import pandas as pd
 from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
-import urllib.parse
 import re
 
-st.set_page_config(page_title="Excel Smart Form", page_icon="📄", layout="centered")
-st.title("📄 Dynamic Excel Form with WhatsApp Link")
+st.set_page_config(page_title="Excel Smart Form + WhatsApp", page_icon="📄", layout="centered")
+st.title("📄 Excel Smart Form + WhatsApp Member System")
 
-uploaded = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
+# --- Step 1: Upload Members File ---
+st.header("👥 Upload Members List")
+members_file = st.file_uploader("📂 Upload Members Excel File", type=["xlsx"], key="members")
 
-if uploaded:
+members_df = None
+if members_file:
+    members_df = pd.read_excel(members_file)
+    members_df.columns = [c.strip().title() for c in members_df.columns]
+    if "Name" not in members_df.columns or "Whatsapp" not in members_df.columns:
+        st.error("❌ Members file must contain columns: 'Name' and 'Whatsapp'")
+        members_df = None
+    else:
+        st.success("✅ Members file loaded successfully!")
+        st.dataframe(members_df)
+
+# --- Step 2: Upload Form File ---
+st.header("🧾 Upload Form Template File")
+form_file = st.file_uploader("📂 Upload Form Excel File", type=["xlsx"], key="form")
+
+if form_file:
     try:
         # Detect header row
-        df_raw = pd.read_excel(uploaded, header=None)
+        df_raw = pd.read_excel(form_file, header=None)
         header_row_index = None
         for i in range(len(df_raw)):
             row = df_raw.iloc[i]
@@ -22,15 +38,15 @@ if uploaded:
                 header_row_index = i
                 break
 
-        df = pd.read_excel(uploaded, header=header_row_index)
+        df = pd.read_excel(form_file, header=header_row_index)
         df.columns = [str(c).strip().replace("_", " ").title() for c in df.columns if pd.notna(c)]
 
-        st.success("✅ Columns Detected Successfully!")
+        st.success("✅ Form columns detected successfully!")
         st.write("**Detected Columns:**", list(df.columns))
 
-        # Detect dropdowns (data validation)
-        uploaded.seek(0)
-        wb = load_workbook(uploaded, data_only=True)
+        # Detect dropdowns
+        form_file.seek(0)
+        wb = load_workbook(form_file, data_only=True)
         ws = wb.active
         dropdown_dict = {}
 
@@ -57,7 +73,6 @@ if uploaded:
                             except Exception:
                                 continue
 
-        # Show dropdowns
         if dropdown_dict:
             st.info("🎯 **Detected Dropdown Columns:**")
             st.table(pd.DataFrame([
@@ -67,12 +82,8 @@ if uploaded:
         else:
             st.warning("⚠️ No dropdown lists detected in this Excel file.")
 
-        # Initialize session storage
-        if "session_df" not in st.session_state:
-            st.session_state.session_df = df.copy()
-
-        # Dynamic Form
-        st.subheader("🧾 Fill the Form Below")
+        # --- Step 3: Dynamic Form ---
+        st.header("🖊️ Fill the Form")
         data = {}
         for col in df.columns:
             if col in dropdown_dict:
@@ -80,36 +91,62 @@ if uploaded:
             else:
                 data[col] = st.text_input(f"{col}", key=col)
 
-        # Submit + Add Data to Session
-        if st.button("✅ Submit"):
+        if "form_submissions" not in st.session_state:
+            st.session_state.form_submissions = pd.DataFrame(columns=df.columns)
+
+        if st.button("✅ Submit Form"):
             new_row = pd.DataFrame([data])
-            st.session_state.session_df = pd.concat([st.session_state.session_df, new_row], ignore_index=True)
-            st.success("🎉 Data added successfully!")
+            st.session_state.form_submissions = pd.concat(
+                [st.session_state.form_submissions, new_row], ignore_index=True
+            )
+            st.success("🎉 Form submitted successfully!")
 
-            # Generate WhatsApp link (assuming column 'Phone' exists)
-            if "Phone" in data:
-                phone_number = re.sub(r"\D", "", data["Phone"])  # remove any non-digits
-                message = "\n".join([f"{k}: {v}" for k, v in data.items() if k != "Phone"])
-                message_encoded = urllib.parse.quote(message)
-                wa_link = f"https://wa.me/{phone_number}?text={message_encoded}"
-                st.markdown(f"[💬 Send via WhatsApp]({wa_link})", unsafe_allow_html=True)
-            else:
-                st.warning("⚠️ No 'Phone' column found. Add a column with phone numbers.")
+        st.subheader("📋 All Submitted Data")
+        st.dataframe(st.session_state.form_submissions)
 
-        # Show all data added in this session
-        st.subheader("📋 Current Session Data (All Entries)")
-        st.dataframe(st.session_state.session_df)
+        # --- Step 4: WhatsApp Message Section ---
+        if members_df is not None:
+            st.header("📱 WhatsApp Share Links (Manual Send)")
 
-        # Download updated file
+            app_link = st.text_input(
+                "🔗 Enter Your Streamlit App Link (same for everyone)",
+                placeholder="https://your-streamlit-app.streamlit.app"
+            )
+
+            if app_link:
+                st.write("👇 Click any link to open WhatsApp chat ready to send:")
+                wa_links = []
+                for _, row in members_df.iterrows():
+                    name = str(row["Name"])
+                    number = str(row["Whatsapp"]).replace("+", "").replace(" ", "").replace("-", "")
+                    message = (
+                        f"Hello {name}! Please fill your form here: {app_link}"
+                    )
+                    wa_url = f"https://wa.me/{number}?text={message.replace(' ', '%20')}"
+                    wa_links.append({"Name": name, "WhatsApp": f"[Send to {name}]({wa_url})"})
+
+                st.markdown(pd.DataFrame(wa_links).to_markdown(index=False), unsafe_allow_html=True)
+
+        # --- Step 5: Submission Progress (if members uploaded) ---
+        if members_df is not None and len(st.session_state.form_submissions) > 0:
+            filled = len(st.session_state.form_submissions)
+            total = len(members_df)
+            progress = filled / total if total > 0 else 0
+            st.header("📊 Submission Progress")
+            st.progress(progress)
+            st.write(f"✅ {filled} of {total} members have submitted the form")
+
+        # --- Step 6: Download updated submissions ---
         output = BytesIO()
-        st.session_state.session_df.to_excel(output, index=False)
+        st.session_state.form_submissions.to_excel(output, index=False)
         output.seek(0)
+
         st.download_button(
-            label="⬇️ Download Updated Excel (All Session Data)",
+            label="⬇️ Download Submitted Data (Excel)",
             data=output,
-            file_name="updated_form_data.xlsx",
+            file_name="form_submissions.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
     except Exception as e:
-        st.error(f"❌ Unexpected error: {e}")
+        st.error(f"❌ Error processing form: {e}")
