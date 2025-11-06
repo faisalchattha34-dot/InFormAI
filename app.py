@@ -315,7 +315,7 @@ col1, col2 = st.columns(2)
 with col1:
     if not submissions_df.empty:
         buf = BytesIO()
-        submissions_df.to_excel(buf, index=Fal
+        submissions_df.to_excel(buf, index=Fal)
         buf.seek(0)
         st.download_button("⬇️ Download Submissions Excel", data=buf, file_name="submissions.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
