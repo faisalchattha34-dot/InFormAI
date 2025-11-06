@@ -6,32 +6,66 @@ from openpyxl.utils import column_index_from_string
 import re
 import os
 
+# -------------------------
+# PAGE CONFIG
+# -------------------------
 st.set_page_config(page_title="Excel Smart Form", page_icon="📄", layout="centered")
 
-# --- Detect mode (admin or form)
+# -------------------------
+# MODE DETECTION
+# -------------------------
 query_params = st.experimental_get_query_params()
-mode = query_params.get("mode", ["admin"])[0]
+mode = query_params.get("mode", ["admin"])[0]  # default admin mode
 
-# --- File path for permanent submissions
-SUBMISSION_FILE = "submissions.xlsx"
+# -------------------------
+# FILE NAMES
+# -------------------------
+FORM_TEMPLATE_FILE = "uploaded_form.xlsx"
+RESPONSES_FILE = "responses.xlsx"
 
-def load_submissions():
-    if os.path.exists(SUBMISSION_FILE):
-        return pd.read_excel(SUBMISSION_FILE)
-    return pd.DataFrame()
+# -------------------------
+# DROPDOWN DETECTION FUNCTION
+# -------------------------
+def detect_dropdowns(excel_file, df_columns):
+    excel_file.seek(0)
+    wb = load_workbook(excel_file, data_only=True)
+    ws = wb.active
+    dropdown_dict = {}
 
-def save_submissions(df):
-    df.to_excel(SUBMISSION_FILE, index=False)
+    if ws.data_validations is not None:
+        for dv in ws.data_validations.dataValidation:
+            if dv.type == "list" and dv.formula1:
+                formula = str(dv.formula1).strip('"')
+                if "," in formula:
+                    values = [v.strip() for v in formula.split(",")]
+                else:
+                    values = []
+                for cell_range in dv.cells:
+                    try:
+                        if hasattr(cell_range, "min_col"):
+                            col_index = cell_range.min_col - 1
+                        else:
+                            s = str(cell_range).split(":")[0]
+                            match = re.match(r"([A-Za-z]+)", s)
+                            if not match:
+                                continue
+                            col_letters = match.group(1)
+                            col_index = column_index_from_string(col_letters) - 1
+                        if 0 <= col_index < len(df_columns):
+                            dropdown_dict[df_columns[col_index]] = values
+                    except Exception:
+                        continue
+    return dropdown_dict
 
-# -------------------- ADMIN MODE --------------------
+# -------------------------
+# MODE: ADMIN
+# -------------------------
 if mode == "admin":
-    st.title("👩‍💼 Admin Dashboard - Excel Smart Form")
+    st.title("🧑‍💼 Admin Panel — Form Setup")
 
-    uploaded = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
-
+    uploaded = st.file_uploader("📂 Upload Excel Form Template", type=["xlsx"])
     if uploaded:
         try:
-            # Step 1: Detect header row
             df_raw = pd.read_excel(uploaded, header=None)
             header_row_index = None
             for i in range(len(df_raw)):
@@ -40,116 +74,82 @@ if mode == "admin":
                     header_row_index = i
                     break
 
-            # Step 2: Read DataFrame
             df = pd.read_excel(uploaded, header=header_row_index)
             df.columns = [str(c).strip().replace("_", " ").title() for c in df.columns if pd.notna(c)]
 
             st.success("✅ Columns Detected Successfully!")
             st.write("**Detected Columns:**", list(df.columns))
 
-            # Step 3: Detect dropdowns (data validation)
-            uploaded.seek(0)
-            wb = load_workbook(uploaded, data_only=True)
-            ws = wb.active
-
-            dropdown_dict = {}
-            if ws.data_validations is not None:
-                for dv in ws.data_validations.dataValidation:
-                    if dv.type == "list" and dv.formula1:
-                        formula = str(dv.formula1).strip('"')
-                        if "," in formula:
-                            values = [v.strip() for v in formula.split(",")]
-
-                            for cell_range in dv.cells:
-                                try:
-                                    if hasattr(cell_range, "min_col"):
-                                        col_index = cell_range.min_col - 1
-                                    else:
-                                        s = str(cell_range).split(":")[0]
-                                        match = re.match(r"([A-Za-z]+)", s)
-                                        if not match:
-                                            continue
-                                        col_letters = match.group(1)
-                                        col_index = column_index_from_string(col_letters) - 1
-
-                                    if 0 <= col_index < len(df.columns):
-                                        dropdown_dict[df.columns[col_index]] = values
-                                except Exception:
-                                    continue
-
-            # Step 4: Show dropdowns
-            if dropdown_dict:
+            dropdowns = detect_dropdowns(uploaded, list(df.columns))
+            if dropdowns:
                 st.info("🎯 **Detected Dropdown Columns:**")
                 st.table(pd.DataFrame([
                     {"Column": col, "Dropdown Options": ", ".join(vals)}
-                    for col, vals in dropdown_dict.items()
+                    for col, vals in dropdowns.items()
                 ]))
             else:
-                st.warning("⚠️ No dropdown lists detected in this Excel file.")
+                st.warning("⚠️ No dropdown lists detected.")
 
-            # Step 5: Show form link
-            st.markdown("### 🔗 Shareable Form Link")
-            app_url = st.experimental_get_query_params()
-            base_url = st.get_option("browser.serverAddress")
-            port = st.get_option("browser.serverPort")
-            form_link = f"http://{base_url}:{port}/?mode=form"
-            st.code(form_link, language="markdown")
-            st.info("Send this link to all members via WhatsApp or email — everyone uses the same form link.")
+            # Save the uploaded Excel form template
+            with open(FORM_TEMPLATE_FILE, "wb") as f:
+                f.write(uploaded.getbuffer())
+            st.success("📄 Form template saved successfully!")
 
-            # Step 6: Show submissions tracking
-            st.subheader("📊 Form Submissions Tracker")
-            submitted_df = load_submissions()
-            if not submitted_df.empty:
-                st.success(f"✅ Total Submissions: {len(submitted_df)}")
-                st.dataframe(submitted_df)
-            else:
-                st.warning("No submissions yet.")
+            st.markdown("---")
+            st.info("✅ Share this form link with anyone:")
+            st.code("http://localhost:8501/?mode=form", language="bash")
 
-            # Step 7: Download all submissions
-            if not submitted_df.empty:
-                buf = BytesIO()
-                submitted_df.to_excel(buf, index=False)
-                buf.seek(0)
-                st.download_button(
-                    label="⬇️ Download All Submissions",
-                    data=buf,
-                    file_name="submissions.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            st.caption("ℹ️ Replace localhost with your network IP or deploy link if needed.")
 
         except Exception as e:
-            st.error(f"❌ Unexpected error: {e}")
+            st.error(f"❌ Error: {e}")
 
-# -------------------- FORM MODE --------------------
-elif mode == "form":
-    st.title("📝 Member Form - Excel Smart Form")
-
-    # Load the structure from the last uploaded Excel (admin must upload at least once)
-    if not os.path.exists("submissions_structure.xlsx"):
-        st.error("⚠️ Admin must first upload Excel in Admin Mode to set up form structure.")
+    # Show saved responses
+    if os.path.exists(RESPONSES_FILE):
+        st.subheader("📊 Submitted Responses (Live Data)")
+        df_responses = pd.read_excel(RESPONSES_FILE)
+        st.dataframe(df_responses)
+        st.download_button(
+            "⬇️ Download All Responses",
+            data=open(RESPONSES_FILE, "rb").read(),
+            file_name="responses.xlsx"
+        )
     else:
-        df_structure = pd.read_excel("submissions_structure.xlsx")
+        st.info("No responses yet.")
 
-        # Load dropdowns (stored separately)
-        dropdown_file = "dropdowns.pkl"
-        import pickle
-        if os.path.exists(dropdown_file):
-            with open(dropdown_file, "rb") as f:
-                dropdown_dict = pickle.load(f)
-        else:
-            dropdown_dict = {}
+# -------------------------
+# MODE: FORM
+# -------------------------
+elif mode == "form":
+    st.title("📝 Fill the Form")
 
-        st.subheader("Please fill the following form:")
-        data = {}
-        for col in df_structure.columns:
-            if col in dropdown_dict:
-                data[col] = st.selectbox(col, dropdown_dict[col])
+    if not os.path.exists(FORM_TEMPLATE_FILE):
+        st.error("❌ No form template found. Please ask the admin to upload one.")
+    else:
+        df = pd.read_excel(FORM_TEMPLATE_FILE)
+        df.columns = [str(c).strip().replace("_", " ").title() for c in df.columns if pd.notna(c)]
+        dropdowns = detect_dropdowns(open(FORM_TEMPLATE_FILE, "rb"), list(df.columns))
+
+        form_data = {}
+        for col in df.columns:
+            if col in dropdowns:
+                form_data[col] = st.selectbox(col, dropdowns[col])
             else:
-                data[col] = st.text_input(col)
+                form_data[col] = st.text_input(col)
 
-        if st.button("✅ Submit Form"):
-            new_row = pd.DataFrame([data])
-            existing = load_submissions()
-            updated = pd.concat([existing, new_row], ignore_index=True)
-            save_submissions(updated)
+        if st.button("✅ Submit"):
+            new_row = pd.DataFrame([form_data])
+
+            if os.path.exists(RESPONSES_FILE):
+                old = pd.read_excel(RESPONSES_FILE)
+                updated = pd.concat([old, new_row], ignore_index=True)
+            else:
+                updated = new_row
+
+            updated.to_excel(RESPONSES_FILE, index=False)
             st.success("🎉 Your response has been submitted successfully!")
+
+            st.write("✅ Thank you for filling out the form!")
+
+else:
+    st.error("Invalid mode. Use ?mode=admin or ?mode=form in the URL.")
