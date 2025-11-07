@@ -81,12 +81,23 @@ meta = load_meta()
 # ----------------------------
 # FORM VIEW (User fills form)
 # ----------------------------
+
+       # ----------------------------
+# FORM VIEW (User fills form)
+# ----------------------------
 if mode == "form":
     if not form_id or "forms" not in meta or form_id not in meta["forms"]:
         st.error("Invalid or missing form ID. Please contact the admin.")
     else:
         info = meta["forms"][form_id]
         st.header(f"🧾 {info['form_name']}")
+
+        # ✅ Create a user session ID (unique per user)
+        if "session_id" not in st.session_state:
+            st.session_state["session_id"] = str(uuid.uuid4())[:8]
+        session_id = st.session_state["session_id"]
+        st.caption(f"🆔 Your Session ID: {session_id}")
+
         dropdowns = info.get("dropdowns", {})
         columns = info["columns"]
 
@@ -98,25 +109,40 @@ if mode == "form":
                 values[col] = st.text_input(col)
 
         if st.button("✅ Submit"):
-            row = {"SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            row = {
+                "UserSession": session_id,
+                "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
             row.update(values)
 
             try:
-                # ✅ Save directly to the original uploaded Excel file
                 original_path = info.get("original_path")
                 if original_path and os.path.exists(original_path):
+                    # ✅ Load the Excel file safely (without overwriting)
                     existing = pd.read_excel(original_path)
-                    # Align columns
+
+                    # Add missing columns if needed
                     for col in row.keys():
                         if col not in existing.columns:
                             existing[col] = None
+
+                    # ✅ Append the new row
                     existing = pd.concat([existing, pd.DataFrame([row])], ignore_index=True)
+
+                    # ✅ Save back safely
                     existing.to_excel(original_path, index=False)
-                    st.success("🎉 Your response has been saved in the original Excel file!")
+
+                    st.success("🎉 Your response has been saved successfully!")
+                    st.balloons()
+
+                    # Optionally, clear the form after submission
+                    for key in values.keys():
+                        st.session_state.pop(key, None)
                 else:
                     st.warning("Original Excel not found — cannot save your submission.")
             except Exception as e:
                 st.error(f"Error saving data: {e}")
+
 
 # ----------------------------
 # ADMIN VIEW
