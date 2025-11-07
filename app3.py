@@ -82,16 +82,8 @@ meta = load_meta()
 # FORM VIEW (User fills form)
 # ----------------------------
 
-       # ----------------------------
-# FORM VIEW (User fills form)
-# ----------------------------
-
-
-        # ----------------------------
-# FORM VIEW (User fills form)
-# ----------------------------
-
-           # ----------------------------
+          
+                # ----------------------------
 # FORM VIEW (User fills form)
 # ----------------------------
 if mode == "form":
@@ -122,6 +114,7 @@ if mode == "form":
             submitted = st.form_submit_button("✅ Submit Response")
 
         if submitted:
+            # Make one full row
             row = {
                 "UserSession": session_id,
                 "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -129,34 +122,39 @@ if mode == "form":
             row.update(values)
 
             try:
+                # ✅ Ensure file path exists
                 original_path = info.get("original_path")
-
-                # Ensure Excel exists
-                if not original_path or not os.path.exists(original_path):
+                if not original_path:
                     original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
-                    pd.DataFrame(columns=list(row.keys())).to_excel(original_path, index=False)
                     info["original_path"] = original_path
                     meta["forms"][form_id] = info
                     save_meta(meta)
 
-                # Load and append safely
+                # ✅ Create file if not found
+                if not os.path.exists(original_path):
+                    pd.DataFrame(columns=list(row.keys())).to_excel(original_path, index=False)
+
+                # ✅ Load existing responses
                 existing = pd.read_excel(original_path)
+
+                # ✅ Ensure all columns exist in Excel
                 for col in row.keys():
                     if col not in existing.columns:
                         existing[col] = None
 
+                # ✅ Append new row
                 new_row_df = pd.DataFrame([row])
                 combined = pd.concat([existing, new_row_df], ignore_index=True)
+
+                # ✅ Save back to Excel
                 combined.to_excel(original_path, index=False)
 
-                st.success("🎉 Response saved successfully! You can add more without refreshing.")
+                st.success("✅ Your response has been saved to Excel successfully!")
                 st.balloons()
 
             except Exception as e:
-                st.error(f"❌ Error saving data: {e}")
+                st.error(f"❌ Error while saving to Excel: {e}")
 
-                
-               
 
 # ----------------------------
 # ADMIN VIEW
@@ -189,7 +187,7 @@ else:
                     form_id = str(uuid.uuid4())[:10]
                     forms = meta.get("forms", {})
 
-                    # ✅ Save uploaded Excel permanently for this form
+                    # ✅ Save uploaded Excel permanently
                     original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
                     uploaded.seek(0)
                     with open(original_path, "wb") as f:
@@ -200,7 +198,7 @@ else:
                         "columns": list(df.columns),
                         "dropdowns": dropdowns,
                         "created_at": datetime.now().isoformat(),
-                        "original_path": original_path,  # 🔗 Save path to Excel file
+                        "original_path": original_path,
                     }
 
                     meta["forms"] = forms
@@ -213,8 +211,20 @@ else:
 
         except Exception as e:
             st.error(f"Error processing file: {e}")
-       st.markdown("---")
-       st.subheader("📈 Responses Dashboard")
+
+    st.markdown("---")
+    st.subheader("📊 Existing Forms")
+
+    forms = meta.get("forms", {})
+    if forms:
+        df_forms = pd.DataFrame([
+            {"Form ID": fid, "Form Name": fdata["form_name"], "Created": fdata["created_at"]}
+            for fid, fdata in forms.items()
+        ])
+        st.dataframe(df_forms)
+
+        st.markdown("---")
+        st.subheader("📈 Responses Dashboard")
 
         selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
 
@@ -224,7 +234,6 @@ else:
             st.write(f"**Created At:** {fdata['created_at']}")
 
             excel_path = fdata.get("original_path")
-
             if excel_path and os.path.exists(excel_path):
                 try:
                     df_responses = pd.read_excel(excel_path)
@@ -232,7 +241,7 @@ else:
                         st.success(f"✅ {len(df_responses)} responses found")
                         st.dataframe(df_responses, use_container_width=True)
 
-                        # Download button for admin
+                        # Download button
                         csv = df_responses.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="⬇️ Download Responses as CSV",
@@ -240,6 +249,19 @@ else:
                             file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
                             mime="text/csv"
                         )
+
+                        # 🔍 Search by Session ID
+                        st.markdown("---")
+                        st.subheader("🔍 Search Responses by Session ID")
+                        search_id = st.text_input("Enter Session ID:")
+
+                        if search_id:
+                            matched = df_responses[df_responses["UserSession"].astype(str).str.strip() == search_id.strip()]
+                            if not matched.empty:
+                                st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id}")
+                                st.dataframe(matched, use_container_width=True)
+                            else:
+                                st.warning("No responses found for this Session ID.")
                     else:
                         st.info("No responses submitted yet.")
                 except Exception as e:
@@ -248,5 +270,3 @@ else:
                 st.warning("Excel file not found for this form.")
     else:
         st.info("No forms created yet.")
-
-
