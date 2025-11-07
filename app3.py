@@ -243,3 +243,29 @@ else:
                         )
                 except Exception as e:
                     st.error(f"Error reading responses: {e}")
+ # Step 7: Submit + Add Data to Session
+        if st.button("✅ Submit"):
+            new_row = pd.DataFrame([data])
+            st.session_state.session_df = pd.concat([st.session_state.session_df, new_row], ignore_index=True)
+            st.success("🎉 Data added successfully!")
+
+        # Step 8: Show all data added in this session
+        st.subheader("📋 Current Session Data (All Entries)")
+        st.dataframe(st.session_state.session_df)
+
+        # Step 9: Download updated file
+        output = BytesIO()
+        st.session_state.session_df.to_excel(output, index=False)
+        output.seek(0)
+
+        st.download_button(
+            label="⬇️ Download Updated Excel (All Session Data)",
+            data=output,
+            file_name="updated_form_data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+
+       
