@@ -214,19 +214,7 @@ else:
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
-    st.markdown("---")
-    st.subheader("📊 Existing Forms")
-
-    forms = meta.get("forms", {})
-
-    if forms:
-        df_forms = pd.DataFrame([
-            {"Form ID": fid, "Form Name": fdata["form_name"], "Created": fdata["created_at"]}
-            for fid, fdata in forms.items()
-        ])
-        st.dataframe(df_forms)
-
-       st.markdown("---")
+st.markdown("---")  
 st.subheader("🔍 Search Responses by Session ID")
 
 search_id = st.text_input("Enter Session ID to find specific user's responses:")
