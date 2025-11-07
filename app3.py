@@ -37,6 +37,7 @@ def detect_dropdowns(excel_file, df_columns):
     wb = load_workbook(excel_file, data_only=True)
     ws = wb.active
     dropdowns = {}
+
     if ws.data_validations:
         for dv in ws.data_validations.dataValidation:
             try:
@@ -142,5 +143,103 @@ if mode == "form":
                 # ✅ Save updated data
                 combined.to_excel(original_path, index=False)
 
-              st.success("✅ Your response has been saved to Excel successfully!")
+                st.success("✅ Your response has been saved to Excel successfully!")
+                st.balloons()
 
+            except Exception as e:
+                st.error(f"❌ Error while saving to Excel: {e}")
+
+# ----------------------------
+# ADMIN VIEW
+# ----------------------------
+else:
+    st.header("🧑‍💼 Admin Panel")
+    st.write("Upload an Excel file — its columns will automatically become form fields.")
+
+    uploaded = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
+
+    if uploaded:
+        try:
+            df = pd.read_excel(uploaded)
+            df.columns = [str(c).strip().replace("_", " ").title() for c in df.columns if pd.notna(c)]
+            st.success(f"Detected columns: {len(df.columns)}")
+            st.write(df.columns.tolist())
+
+            dropdowns = detect_dropdowns(uploaded, list(df.columns))
+            if dropdowns:
+                st.info("Detected dropdowns:")
+                st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
+
+            form_name = st.text_input("Form name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            base_url = st.text_input("Your Streamlit app public URL (example: https://yourapp.streamlit.app)")
+
+            if st.button("🚀 Create Form Link"):
+                if not base_url:
+                    st.error("Please enter your app URL to generate shareable link.")
+                else:
+                    form_id = str(uuid.uuid4())[:10]
+                    forms = meta.get("forms", {})
+
+                    # ✅ Save uploaded Excel permanently
+                    original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
+                    uploaded.seek(0)
+                    with open(original_path, "wb") as f:
+                        f.write(uploaded.read())
+
+                    forms[form_id] = {
+                        "form_name": form_name,
+                        "columns": list(df.columns),
+                        "dropdowns": dropdowns,
+                        "created_at": datetime.now().isoformat(),
+                        "original_path": original_path,
+                    }
+
+                    meta["forms"] = forms
+                    save_meta(meta)
+
+                    link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id}"
+                    st.success("✅ Form created successfully!")
+                    st.info("Share this link with others to fill the form:")
+                    st.code(link)
+
+        except Exception as e:
+            st.error(f"Error processing file: {e}")
+
+    st.markdown("---")
+    st.subheader("📊 Existing Forms")
+
+    forms = meta.get("forms", {})
+    if forms:
+        df_forms = pd.DataFrame([
+            {"Form ID": fid, "Form Name": fdata["form_name"], "Created": fdata["created_at"]}
+            for fid, fdata in forms.items()
+        ])
+        st.dataframe(df_forms)
+
+        st.markdown("---")
+        st.subheader("📈 Responses Dashboard")
+
+        selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
+
+        if selected_form != "-- Select --":
+            fdata = forms[selected_form]
+            st.write(f"**Form Name:** {fdata['form_name']}")
+            st.write(f"**Created At:** {fdata['created_at']}")
+
+            excel_path = fdata.get("original_path")
+            if excel_path and os.path.exists(excel_path):
+                try:
+                    df_responses = pd.read_excel(excel_path)
+                    if not df_responses.empty:
+                        st.success(f"✅ {len(df_responses)} responses found")
+                        st.dataframe(df_responses, use_container_width=True)
+
+                        csv = df_responses.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label="⬇️ Download Responses as CSV",
+                            data=csv,
+                            file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
+                            mime="text/csv"
+                        )
+                except Exception as e:
+                    st.error(f"Error reading responses: {e}")
