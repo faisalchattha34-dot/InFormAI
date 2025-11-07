@@ -213,17 +213,40 @@ else:
 
         except Exception as e:
             st.error(f"Error processing file: {e}")
+ st.markdown("---")
+        st.subheader("📈 Responses Dashboard")
 
-st.markdown("---")  
-st.subheader("🔍 Search Responses by Session ID")
+        selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
 
-search_id = st.text_input("Enter Session ID to find specific user's responses:")
+        if selected_form != "-- Select --":
+            fdata = forms[selected_form]
+            st.write(f"**Form Name:** {fdata['form_name']}")
+            st.write(f"**Created At:** {fdata['created_at']}")
 
-if search_id:
-    if not df_responses.empty:
-        matched = df_responses[df_responses["UserSession"].astype(str).str.strip() == search_id.strip()]
-        if not matched.empty:
-            st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id}")
-            st.dataframe(matched.style.highlight_max(axis=0, color="lightgreen"), use_container_width=True)
-        else:
-            st.warning("No responses found for this Session ID.")
+            excel_path = fdata.get("original_path")
+
+            if excel_path and os.path.exists(excel_path):
+                try:
+                    df_responses = pd.read_excel(excel_path)
+                    if not df_responses.empty:
+                        st.success(f"✅ {len(df_responses)} responses found")
+                        st.dataframe(df_responses, use_container_width=True)
+
+                        # Download button for admin
+                        csv = df_responses.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="⬇️ Download Responses as CSV",
+                            data=csv,
+                            file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("No responses submitted yet.")
+                except Exception as e:
+                    st.error(f"Error reading responses: {e}")
+            else:
+                st.warning("Excel file not found for this form.")
+    else:
+        st.info("No forms created yet.")
+
+
