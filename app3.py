@@ -213,8 +213,8 @@ else:
 
         except Exception as e:
             st.error(f"Error processing file: {e}")
- st.markdown("---")
-        st.subheader("📈 Responses Dashboard")
+       st.markdown("---")
+       st.subheader("📈 Responses Dashboard")
 
         selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
 
