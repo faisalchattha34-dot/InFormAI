@@ -174,14 +174,51 @@ else:
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
-    st.markdown("---")
+        st.markdown("---")
     st.subheader("📊 Existing Forms")
+
     forms = meta.get("forms", {})
+
     if forms:
         df_forms = pd.DataFrame([
             {"Form ID": fid, "Form Name": fdata["form_name"], "Created": fdata["created_at"]}
             for fid, fdata in forms.items()
         ])
         st.dataframe(df_forms)
+
+        st.markdown("---")
+        st.subheader("📈 Responses Dashboard")
+
+        selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
+
+        if selected_form != "-- Select --":
+            fdata = forms[selected_form]
+            st.write(f"**Form Name:** {fdata['form_name']}")
+            st.write(f"**Created At:** {fdata['created_at']}")
+
+            excel_path = fdata.get("original_path")
+
+            if excel_path and os.path.exists(excel_path):
+                try:
+                    df_responses = pd.read_excel(excel_path)
+                    if not df_responses.empty:
+                        st.success(f"✅ {len(df_responses)} responses found")
+                        st.dataframe(df_responses, use_container_width=True)
+
+                        # Download button for admin
+                        csv = df_responses.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="⬇️ Download Responses as CSV",
+                            data=csv,
+                            file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("No responses submitted yet.")
+                except Exception as e:
+                    st.error(f"Error reading responses: {e}")
+            else:
+                st.warning("Excel file not found for this form.")
     else:
         st.info("No forms created yet.")
+
