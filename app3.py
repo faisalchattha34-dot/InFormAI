@@ -90,6 +90,10 @@ meta = load_meta()
         # ----------------------------
 # FORM VIEW (User fills form)
 # ----------------------------
+
+           # ----------------------------
+# FORM VIEW (User fills form)
+# ----------------------------
 if mode == "form":
     if not form_id or "forms" not in meta or form_id not in meta["forms"]:
         st.error("Invalid or missing form ID. Please contact the admin.")
@@ -97,7 +101,7 @@ if mode == "form":
         info = meta["forms"][form_id]
         st.header(f"🧾 {info['form_name']}")
 
-        # ✅ Unique user session for each visitor
+        # ✅ Persistent session per browser
         if "session_id" not in st.session_state:
             st.session_state["session_id"] = str(uuid.uuid4())[:8]
         session_id = st.session_state["session_id"]
@@ -106,15 +110,18 @@ if mode == "form":
         dropdowns = info.get("dropdowns", {})
         columns = info["columns"]
 
-        # Create form UI dynamically
-        values = {}
-        for col in columns:
-            if col in dropdowns:
-                values[col] = st.selectbox(col, dropdowns[col])
-            else:
-                values[col] = st.text_input(col)
+        # ✅ Create form dynamically
+        with st.form("user_form", clear_on_submit=False):
+            values = {}
+            for col in columns:
+                if col in dropdowns:
+                    values[col] = st.selectbox(col, dropdowns[col], key=f"{col}_{session_id}")
+                else:
+                    values[col] = st.text_input(col, key=f"{col}_{session_id}")
 
-        if st.button("✅ Submit"):
+            submitted = st.form_submit_button("✅ Submit Response")
+
+        if submitted:
             row = {
                 "UserSession": session_id,
                 "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -124,7 +131,7 @@ if mode == "form":
             try:
                 original_path = info.get("original_path")
 
-                # ✅ Ensure the Excel file exists, even if missing
+                # Ensure Excel exists
                 if not original_path or not os.path.exists(original_path):
                     original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
                     pd.DataFrame(columns=list(row.keys())).to_excel(original_path, index=False)
@@ -132,32 +139,23 @@ if mode == "form":
                     meta["forms"][form_id] = info
                     save_meta(meta)
 
-                # ✅ Load existing file
+                # Load and append safely
                 existing = pd.read_excel(original_path)
-
-                # ✅ Make sure all columns exist
                 for col in row.keys():
                     if col not in existing.columns:
                         existing[col] = None
 
-                # ✅ Append safely
                 new_row_df = pd.DataFrame([row])
                 combined = pd.concat([existing, new_row_df], ignore_index=True)
-
-                # ✅ Write back safely
                 combined.to_excel(original_path, index=False)
 
-                st.success("🎉 Your response has been saved successfully!")
+                st.success("🎉 Response saved successfully! You can add more without refreshing.")
                 st.balloons()
-
-                # Clear input fields
-                for key in values.keys():
-                    if key in st.session_state:
-                        del st.session_state[key]
 
             except Exception as e:
                 st.error(f"❌ Error saving data: {e}")
 
+                
                
 
 # ----------------------------
@@ -228,39 +226,16 @@ else:
         ])
         st.dataframe(df_forms)
 
-        st.markdown("---")
-        st.subheader("📈 Responses Dashboard")
+       st.markdown("---")
+st.subheader("🔍 Search Responses by Session ID")
 
-        selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
+search_id = st.text_input("Enter Session ID to find specific user's responses:")
 
-        if selected_form != "-- Select --":
-            fdata = forms[selected_form]
-            st.write(f"**Form Name:** {fdata['form_name']}")
-            st.write(f"**Created At:** {fdata['created_at']}")
-
-            excel_path = fdata.get("original_path")
-
-            if excel_path and os.path.exists(excel_path):
-                try:
-                    df_responses = pd.read_excel(excel_path)
-                    if not df_responses.empty:
-                        st.success(f"✅ {len(df_responses)} responses found")
-                        st.dataframe(df_responses, use_container_width=True)
-
-                        # Download button for admin
-                        csv = df_responses.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="⬇️ Download Responses as CSV",
-                            data=csv,
-                            file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
-                            mime="text/csv"
-                        )
-                    else:
-                        st.info("No responses submitted yet.")
-                except Exception as e:
-                    st.error(f"Error reading responses: {e}")
-            else:
-                st.warning("Excel file not found for this form.")
-    else:
-        st.info("No forms created yet.")
-
+if search_id:
+    if not df_responses.empty:
+        matched = df_responses[df_responses["UserSession"].astype(str).str.strip() == search_id.strip()]
+        if not matched.empty:
+            st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id}")
+            st.dataframe(matched.style.highlight_max(axis=0, color="lightgreen"), use_container_width=True)
+        else:
+            st.warning("No responses found for this Session ID.")
