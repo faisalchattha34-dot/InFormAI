@@ -214,7 +214,7 @@ else:
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
-        st.markdown("---")
+    st.markdown("---")
     st.subheader("📊 Existing Forms")
 
     forms = meta.get("forms", {})
