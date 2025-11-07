@@ -251,22 +251,4 @@ else:
                         )
 
                         # 🔍 Search by Session ID
-                        st.markdown("---")
-                        st.subheader("🔍 Search Responses by Session ID")
-                        search_id = st.text_input("Enter Session ID:")
-
-                        if search_id:
-                            matched = df_responses[df_responses["UserSession"].astype(str).str.strip() == search_id.strip()]
-                            if not matched.empty:
-                                st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id}")
-                                st.dataframe(matched, use_container_width=True)
-                            else:
-                                st.warning("No responses found for this Session ID.")
-                    else:
-                        st.info("No responses submitted yet.")
-                except Exception as e:
-                    st.error(f"Error reading responses: {e}")
-            else:
-                st.warning("Excel file not found for this form.")
-    else:
-        st.info("No forms created yet.")
+                        
