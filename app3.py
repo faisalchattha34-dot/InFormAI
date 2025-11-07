@@ -239,15 +239,28 @@ else:
                         # 🔍 Search by Session ID
                         st.markdown("---")
                         st.subheader("🔍 Search Responses by Session ID")
+
                         search_id = st.text_input("Enter Session ID:")
 
                         if search_id:
-                            matched = df_responses[df_responses["UserSession"].astype(str).str.strip() == search_id.strip()]
+                            search_id_clean = search_id.strip()
+                            df_responses["UserSession"] = df_responses["UserSession"].astype(str).str.strip()
+                            matched = df_responses[df_responses["UserSession"] == search_id_clean]
+
                             if not matched.empty:
-                                st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id}")
-                                st.dataframe(matched, use_container_width=True)
+                                st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id_clean}")
+
+                                def highlight_session(row):
+                                    color = "background-color: lightgreen" if str(row["UserSession"]) == search_id_clean else ""
+                                    return [color] * len(row)
+
+                                styled_df = df_responses.style.apply(highlight_session, axis=1)
+                                st.dataframe(styled_df, use_container_width=True)
                             else:
-                                st.warning("No responses found for this Session ID.")
+                                st.warning(f"❌ No responses found for Session ID: {search_id_clean}")
+                        else:
+                            st.info("ℹ️ Enter a Session ID above to highlight related responses.")
+
                     else:
                         st.info("No responses submitted yet.")
                 except Exception as e:
