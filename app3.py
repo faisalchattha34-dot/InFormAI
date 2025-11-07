@@ -7,7 +7,6 @@ from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 import re
-from io import BytesIO
 
 # ----------------------------
 # Setup
@@ -37,7 +36,6 @@ def detect_dropdowns(excel_file, df_columns):
     wb = load_workbook(excel_file, data_only=True)
     ws = wb.active
     dropdowns = {}
-
     if ws.data_validations:
         for dv in ws.data_validations.dataValidation:
             try:
@@ -77,6 +75,7 @@ def detect_dropdowns(excel_file, df_columns):
 params = st.experimental_get_query_params()
 mode = params.get("mode", ["admin"])[0]
 form_id = params.get("form_id", [None])[0]
+
 meta = load_meta()
 
 # ----------------------------
@@ -98,7 +97,7 @@ if mode == "form":
         dropdowns = info.get("dropdowns", {})
         columns = info["columns"]
 
-        # ✅ Dynamic form builder
+        # ✅ Create form dynamically
         with st.form("user_form", clear_on_submit=False):
             values = {}
             for col in columns:
@@ -106,10 +105,10 @@ if mode == "form":
                     values[col] = st.selectbox(col, dropdowns[col], key=f"{col}_{session_id}")
                 else:
                     values[col] = st.text_input(col, key=f"{col}_{session_id}")
+
             submitted = st.form_submit_button("✅ Submit Response")
 
         if submitted:
-            # ✅ Prepare one complete row
             row = {
                 "UserSession": session_id,
                 "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -117,37 +116,31 @@ if mode == "form":
             row.update(values)
 
             try:
-                # ✅ Ensure Excel file path exists
                 original_path = info.get("original_path")
-                if not original_path:
+
+                # Ensure Excel exists
+                if not original_path or not os.path.exists(original_path):
                     original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
+                    pd.DataFrame(columns=list(row.keys())).to_excel(original_path, index=False)
                     info["original_path"] = original_path
                     meta["forms"][form_id] = info
                     save_meta(meta)
 
-                # ✅ Create Excel file if missing
-                if not os.path.exists(original_path):
-                    pd.DataFrame(columns=list(row.keys())).to_excel(original_path, index=False)
-
-                # ✅ Load and append new row
+                # Load and append safely
                 existing = pd.read_excel(original_path)
-
-                # Ensure all columns match
                 for col in row.keys():
                     if col not in existing.columns:
                         existing[col] = None
 
                 new_row_df = pd.DataFrame([row])
                 combined = pd.concat([existing, new_row_df], ignore_index=True)
-
-                # ✅ Save updated data
                 combined.to_excel(original_path, index=False)
 
-                st.success("✅ Your response has been saved to Excel successfully!")
+                st.success("🎉 Response saved successfully! You can add more without refreshing.")
                 st.balloons()
 
             except Exception as e:
-                st.error(f"❌ Error while saving to Excel: {e}")
+                st.error(f"❌ Error saving data: {e}")
 
 # ----------------------------
 # ADMIN VIEW
@@ -234,12 +227,32 @@ else:
                         st.success(f"✅ {len(df_responses)} responses found")
                         st.dataframe(df_responses, use_container_width=True)
 
-                        csv = df_responses.to_csv(index=False).encode("utf-8")
+                        # Download button
+                        csv = df_responses.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="⬇️ Download Responses as CSV",
                             data=csv,
                             file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
                             mime="text/csv"
                         )
+
+                        # 🔍 Search by Session ID
+                        st.markdown("---")
+                        st.subheader("🔍 Search Responses by Session ID")
+                        search_id = st.text_input("Enter Session ID:")
+
+                        if search_id:
+                            matched = df_responses[df_responses["UserSession"].astype(str).str.strip() == search_id.strip()]
+                            if not matched.empty:
+                                st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id}")
+                                st.dataframe(matched, use_container_width=True)
+                            else:
+                                st.warning("No responses found for this Session ID.")
+                    else:
+                        st.info("No responses submitted yet.")
                 except Exception as e:
                     st.error(f"Error reading responses: {e}")
+            else:
+                st.warning("Excel file not found for this form.")
+    else:
+        st.info("No forms created yet.")
