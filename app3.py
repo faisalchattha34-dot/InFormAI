@@ -17,6 +17,7 @@ st.title("📄 Auto Form Creator from Excel")
 DATA_DIR = "data_store"
 os.makedirs(DATA_DIR, exist_ok=True)
 META_PATH = os.path.join(DATA_DIR, "meta.json")
+ALL_RESPONSES_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
 
 # ----------------------------
 # Helper Functions
@@ -110,31 +111,28 @@ if mode == "form":
 
         if submitted:
             row = {
+                "FormID": form_id,
+                "FormName": info["form_name"],
                 "UserSession": session_id,
                 "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             row.update(values)
 
             try:
-                original_path = info.get("original_path")
+                # ✅ Ensure master Excel exists
+                if not os.path.exists(ALL_RESPONSES_PATH):
+                    pd.DataFrame(columns=list(row.keys())).to_excel(ALL_RESPONSES_PATH, index=False)
 
-                # Ensure Excel exists
-                if not original_path or not os.path.exists(original_path):
-                    original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
-                    pd.DataFrame(columns=list(row.keys())).to_excel(original_path, index=False)
-                    info["original_path"] = original_path
-                    meta["forms"][form_id] = info
-                    save_meta(meta)
+                existing = pd.read_excel(ALL_RESPONSES_PATH)
 
-                # Load and append safely
-                existing = pd.read_excel(original_path)
+                # Add any new columns dynamically
                 for col in row.keys():
                     if col not in existing.columns:
                         existing[col] = None
 
                 new_row_df = pd.DataFrame([row])
                 combined = pd.concat([existing, new_row_df], ignore_index=True)
-                combined.to_excel(original_path, index=False)
+                combined.to_excel(ALL_RESPONSES_PATH, index=False)
 
                 st.success("🎉 Response saved successfully! You can add more without refreshing.")
                 st.balloons()
@@ -173,18 +171,11 @@ else:
                     form_id = str(uuid.uuid4())[:10]
                     forms = meta.get("forms", {})
 
-                    # ✅ Save uploaded Excel permanently
-                    original_path = os.path.join(DATA_DIR, f"original_{form_id}.xlsx")
-                    uploaded.seek(0)
-                    with open(original_path, "wb") as f:
-                        f.write(uploaded.read())
-
                     forms[form_id] = {
                         "form_name": form_name,
                         "columns": list(df.columns),
                         "dropdowns": dropdowns,
                         "created_at": datetime.now().isoformat(),
-                        "original_path": original_path,
                     }
 
                     meta["forms"] = forms
@@ -212,60 +203,47 @@ else:
         st.markdown("---")
         st.subheader("📈 Responses Dashboard")
 
-        selected_form = st.selectbox("Select a form to view responses:", ["-- Select --"] + list(forms.keys()))
+        if os.path.exists(ALL_RESPONSES_PATH):
+            try:
+                df_responses = pd.read_excel(ALL_RESPONSES_PATH)
+                if not df_responses.empty:
+                    st.success(f"✅ {len(df_responses)} total responses found")
+                    st.dataframe(df_responses, use_container_width=True)
 
-        if selected_form != "-- Select --":
-            fdata = forms[selected_form]
-            st.write(f"**Form Name:** {fdata['form_name']}")
-            st.write(f"**Created At:** {fdata['created_at']}")
+                    csv = df_responses.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Download All Responses as CSV",
+                        data=csv,
+                        file_name="all_form_responses.csv",
+                        mime="text/csv"
+                    )
 
-            excel_path = fdata.get("original_path")
-            if excel_path and os.path.exists(excel_path):
-                try:
-                    df_responses = pd.read_excel(excel_path)
-                    if not df_responses.empty:
-                        st.success(f"✅ {len(df_responses)} responses found")
-                        st.dataframe(df_responses, use_container_width=True)
+                    # Filter by form
+                    st.markdown("---")
+                    st.subheader("🔍 Filter by Form or Session ID")
 
-                        # Download button
-                        csv = df_responses.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="⬇️ Download Responses as CSV",
-                            data=csv,
-                            file_name=f"{fdata['form_name'].replace(' ', '_')}_responses.csv",
-                            mime="text/csv"
-                        )
+                    selected_form = st.selectbox("Select Form:", ["All"] + [f["form_name"] for f in forms.values()])
+                    search_id = st.text_input("Enter Session ID (optional):")
 
-                        # 🔍 Search by Session ID
-                        st.markdown("---")
-                        st.subheader("🔍 Search Responses by Session ID")
+                    filtered = df_responses.copy()
 
-                        search_id = st.text_input("Enter Session ID:")
+                    if selected_form != "All":
+                        filtered = filtered[filtered["FormName"] == selected_form]
 
-                        if search_id:
-                            search_id_clean = search_id.strip()
-                            df_responses["UserSession"] = df_responses["UserSession"].astype(str).str.strip()
-                            matched = df_responses[df_responses["UserSession"] == search_id_clean]
+                    if search_id:
+                        search_id_clean = search_id.strip()
+                        filtered = filtered[filtered["UserSession"].astype(str).str.strip() == search_id_clean]
 
-                            if not matched.empty:
-                                st.success(f"✅ Found {len(matched)} responses for Session ID: {search_id_clean}")
-
-                                def highlight_session(row):
-                                    color = "background-color: lightgreen" if str(row["UserSession"]) == search_id_clean else ""
-                                    return [color] * len(row)
-
-                                styled_df = df_responses.style.apply(highlight_session, axis=1)
-                                st.dataframe(styled_df, use_container_width=True)
-                            else:
-                                st.warning(f"❌ No responses found for Session ID: {search_id_clean}")
-                        else:
-                            st.info("ℹ️ Enter a Session ID above to highlight related responses.")
-
+                    if not filtered.empty:
+                        st.dataframe(filtered, use_container_width=True)
                     else:
-                        st.info("No responses submitted yet.")
-                except Exception as e:
-                    st.error(f"Error reading responses: {e}")
-            else:
-                st.warning("Excel file not found for this form.")
+                        st.warning("No matching responses found.")
+
+                else:
+                    st.info("No responses submitted yet.")
+            except Exception as e:
+                st.error(f"Error reading all responses: {e}")
+        else:
+            st.info("No responses file found yet.")
     else:
         st.info("No forms created yet.")
