@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import os
@@ -8,6 +7,7 @@ from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 import re
+from io import BytesIO
 
 # ----------------------------
 # Setup
@@ -211,34 +211,34 @@ else:
                     st.success(f"✅ {len(df_responses)} total responses found")
                     st.dataframe(df_responses, use_container_width=True)
 
-                    csv = df_responses.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ Download All Responses as CSV",
-                        data=csv,
-                        file_name="all_form_responses.csv",
-                        mime="text/csv"
+                    # 🔽 Select which form to export
+                    selected_form_export = st.selectbox(
+                        "Select Form to Download:",
+                        ["All"] + [f["form_name"] for f in forms.values()],
+                        key="download_form_select"
                     )
 
-                    # Filter by form
-                    st.markdown("---")
-                    st.subheader("🔍 Filter by Form or Session ID")
+                    # ✅ Filter only original columns for selected form
+                    export_df = df_responses.copy()
+                    if selected_form_export != "All":
+                        selected_form_id = [
+                            fid for fid, f in forms.items() if f["form_name"] == selected_form_export
+                        ][0]
+                        export_df = export_df[export_df["FormID"] == selected_form_id]
 
-                    selected_form = st.selectbox("Select Form:", ["All"] + [f["form_name"] for f in forms.values()])
-                    search_id = st.text_input("Enter Session ID (optional):")
+                        original_columns = forms[selected_form_id]["columns"]
+                        export_df = export_df[original_columns]
 
-                    filtered = df_responses.copy()
-
-                    if selected_form != "All":
-                        filtered = filtered[filtered["FormName"] == selected_form]
-
-                    if search_id:
-                        search_id_clean = search_id.strip()
-                        filtered = filtered[filtered["UserSession"].astype(str).str.strip() == search_id_clean]
-
-                    if not filtered.empty:
-                        st.dataframe(filtered, use_container_width=True)
-                    else:
-                        st.warning("No matching responses found.")
+                    # 🔽 Download Excel version
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        export_df.to_excel(writer, index=False, sheet_name="Responses")
+                    st.download_button(
+                        label="⬇️ Download Responses (Excel)",
+                        data=buffer.getvalue(),
+                        file_name="form_responses.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
 
                 else:
                     st.info("No responses submitted yet.")
@@ -247,4 +247,4 @@ else:
         else:
             st.info("No responses file found yet.")
     else:
-        st.info("No forms created yet.") 
+        st.info("No forms created yet.")
