@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import os
@@ -7,7 +8,6 @@ from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 import re
-from io import BytesIO
 
 # ----------------------------
 # Setup
@@ -148,25 +148,16 @@ else:
     st.header("🧑‍💼 Admin Panel")
     st.write("Upload an Excel file — its columns will automatically become form fields.")
 
-    uploaded = st.file_uploader("📂 Upload Excel File", type=["xlsx", "csv", "pdf"])
+    uploaded = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
 
     if uploaded:
         try:
-            # Only read Excel or CSV — PDF will just record name
-            if uploaded.name.lower().endswith(".csv"):
-                df = pd.read_csv(uploaded)
-            elif uploaded.name.lower().endswith(".xlsx"):
-                df = pd.read_excel(uploaded)
-            else:
-                df = pd.DataFrame()  # Empty but still allows form record
-
+            df = pd.read_excel(uploaded)
             df.columns = [str(c).strip().replace("_", " ").title() for c in df.columns if pd.notna(c)]
             st.success(f"Detected columns: {len(df.columns)}")
             st.write(df.columns.tolist())
 
-            dropdowns = {}
-            if uploaded.name.lower().endswith(".xlsx"):
-                dropdowns = detect_dropdowns(uploaded, list(df.columns))
+            dropdowns = detect_dropdowns(uploaded, list(df.columns))
             if dropdowns:
                 st.info("Detected dropdowns:")
                 st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
@@ -186,7 +177,6 @@ else:
                         "columns": list(df.columns),
                         "dropdowns": dropdowns,
                         "created_at": datetime.now().isoformat(),
-                        "uploaded_name": uploaded.name,  # ✅ store original file name
                     }
 
                     meta["forms"] = forms
@@ -221,78 +211,15 @@ else:
                     st.success(f"✅ {len(df_responses)} total responses found")
                     st.dataframe(df_responses, use_container_width=True)
 
-                    # ----------------------------
-                    # Export section (smart format)
-                    # ----------------------------
-                    export_df = df_responses.drop(columns=["FormID", "FormName", "UserSession"], errors="ignore")
+                    csv = df_responses.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Download All Responses as CSV",
+                        data=csv,
+                        file_name="all_form_responses.csv",
+                        mime="text/csv"
+                    )
 
-                    # Detect last uploaded file extension
-                    last_ext = ".xlsx"
-                    if forms:
-                        try:
-                            last_form = list(forms.values())[-1]
-                            uploaded_name = last_form.get("uploaded_name", "")
-                            _, ext = os.path.splitext(uploaded_name)
-                            if ext:
-                                last_ext = ext.lower()
-                        except Exception:
-                            pass
-
-                    # --- PDF Download ---
-                    if last_ext == ".pdf":
-                        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-                        from reportlab.lib import colors
-                        from reportlab.lib.pagesizes import A4
-                        from reportlab.lib.styles import getSampleStyleSheet
-
-                        pdf_buffer = BytesIO()
-                        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4)
-                        styles = getSampleStyleSheet()
-
-                        data = [export_df.columns.tolist()] + export_df.values.tolist()
-                        table = Table(data)
-                        table.setStyle(TableStyle([
-                            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-                            ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-                            ('FONTSIZE', (0, 0), (-1, -1), 8),
-                        ]))
-                        doc.build([Paragraph("All Form Responses", styles['Heading2']), table])
-                        pdf_buffer.seek(0)
-
-                        st.download_button(
-                            label="⬇️ Download All Responses (PDF)",
-                            data=pdf_buffer,
-                            file_name="all_form_responses.pdf",
-                            mime="application/pdf"
-                        )
-
-                    # --- CSV Download ---
-                    elif last_ext == ".csv":
-                        csv = export_df.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="⬇️ Download All Responses (CSV)",
-                            data=csv,
-                            file_name="all_form_responses.csv",
-                            mime="text/csv"
-                        )
-
-                    # --- Excel (default) ---
-                    else:
-                        output = BytesIO()
-                        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                            export_df.to_excel(writer, index=False, sheet_name="Responses")
-                        output.seek(0)
-
-                        st.download_button(
-                            label="⬇️ Download All Responses (Excel)",
-                            data=output,
-                            file_name="all_form_responses.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-
-                    # ----------------------------
-                    # Filter Options
-                    # ----------------------------
+                    # Filter by form
                     st.markdown("---")
                     st.subheader("🔍 Filter by Form or Session ID")
 
@@ -320,4 +247,4 @@ else:
         else:
             st.info("No responses file found yet.")
     else:
-        st.info("No forms created yet.")
+        st.info("No forms created yet.") 
