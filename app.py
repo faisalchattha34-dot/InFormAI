@@ -15,14 +15,13 @@ from email.mime.multipart import MIMEMultipart
 # ----------------------------
 # Setup
 # ----------------------------
-st.set_page_config(page_title="📄 Excel → Web Form", layout="centered")
-st.title("📄 Auto Form Creator from Excel")
+st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="centered")
+st.title("📄 Excel → Web Form + Auto Email Sender")
 
 DATA_DIR = "data_store"
 os.makedirs(DATA_DIR, exist_ok=True)
 META_PATH = os.path.join(DATA_DIR, "meta.json")
 ALL_RESPONSES_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
-
 
 # ----------------------------
 # Helper Functions
@@ -33,11 +32,9 @@ def load_meta():
             return json.load(f)
     return {}
 
-
 def save_meta(meta):
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
-
 
 def detect_dropdowns(excel_file, df_columns):
     excel_file.seek(0)
@@ -77,6 +74,26 @@ def detect_dropdowns(excel_file, df_columns):
                 continue
     return dropdowns
 
+def send_email_to_members(sender_email, password, members, subject, message):
+    sent_count = 0
+    for email in members:
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = sender_email
+            msg["To"] = email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(message, "plain"))
+
+            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                server.starttls()
+                server.login(sender_email, password)
+                server.send_message(msg)
+
+            sent_count += 1
+            st.success(f"✅ Email sent to {email}")
+        except Exception as e:
+            st.error(f"❌ Failed to send to {email}: {e}")
+    return sent_count
 
 # ----------------------------
 # URL Params
@@ -88,7 +105,7 @@ form_id = params.get("form_id", [None])[0]
 meta = load_meta()
 
 # ----------------------------
-# FORM VIEW (User fills form)
+# FORM VIEW (Users fill form)
 # ----------------------------
 if mode == "form":
     if not form_id or "forms" not in meta or form_id not in meta["forms"]:
@@ -97,7 +114,6 @@ if mode == "form":
         info = meta["forms"][form_id]
         st.header(f"🧾 {info['form_name']}")
 
-        # ✅ Persistent session per browser
         if "session_id" not in st.session_state:
             st.session_state["session_id"] = str(uuid.uuid4())[:8]
         session_id = st.session_state["session_id"]
@@ -106,7 +122,6 @@ if mode == "form":
         dropdowns = info.get("dropdowns", {})
         columns = info["columns"]
 
-        # ✅ Create form dynamically
         with st.form("user_form", clear_on_submit=False):
             values = {}
             for col in columns:
@@ -127,13 +142,11 @@ if mode == "form":
             row.update(values)
 
             try:
-                # ✅ Ensure master Excel exists
                 if not os.path.exists(ALL_RESPONSES_PATH):
                     pd.DataFrame(columns=list(row.keys())).to_excel(ALL_RESPONSES_PATH, index=False)
 
                 existing = pd.read_excel(ALL_RESPONSES_PATH)
 
-                # Add any new columns dynamically
                 for col in row.keys():
                     if col not in existing.columns:
                         existing[col] = None
@@ -142,9 +155,8 @@ if mode == "form":
                 combined = pd.concat([existing, new_row_df], ignore_index=True)
                 combined.to_excel(ALL_RESPONSES_PATH, index=False)
 
-                st.success("🎉 Response saved successfully! You can add more without refreshing.")
+                st.success("🎉 Response saved successfully!")
                 st.balloons()
-
             except Exception as e:
                 st.error(f"❌ Error saving data: {e}")
 
@@ -153,138 +165,66 @@ if mode == "form":
 # ----------------------------
 else:
     st.header("🧑‍💼 Admin Panel")
-    st.write("Upload an Excel file — its columns will automatically become form fields.")
+    st.write("Upload two Excel files — Member List & Form Source.")
 
-    uploaded = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
+    col1, col2 = st.columns(2)
+    with col1:
+        member_file = st.file_uploader("📋 Upload Member List (must have 'Email' column)", type=["xlsx"])
+    with col2:
+        form_file = st.file_uploader("📄 Upload Form Source File", type=["xlsx"])
 
-    if uploaded:
+    if member_file and form_file:
         try:
-            df = pd.read_excel(uploaded)
-            df.columns = [str(c).strip().replace("_", " ").title() for c in df.columns if pd.notna(c)]
-            st.success(f"Detected columns: {len(df.columns)}")
-            st.write(df.columns.tolist())
+            df_members = pd.read_excel(member_file)
+            df_form = pd.read_excel(form_file)
 
-            dropdowns = detect_dropdowns(uploaded, list(df.columns))
-            if dropdowns:
-                st.info("Detected dropdowns:")
-                st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
+            if "Email" not in df_members.columns:
+                st.error("❌ Member file must contain an 'Email' column.")
+            else:
+                df_form.columns = [str(c).strip().replace("_", " ").title() for c in df_form.columns if pd.notna(c)]
+                st.success(f"✅ Form fields detected: {len(df_form.columns)}")
+                st.write(df_form.columns.tolist())
 
-            form_name = st.text_input("Form name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            base_url = st.text_input("Your Streamlit app public URL (example: https://yourapp.streamlit.app)")
+                dropdowns = detect_dropdowns(form_file, list(df_form.columns))
+                if dropdowns:
+                    st.info("Detected dropdowns:")
+                    st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
 
-            if st.button("🚀 Create Form Link"):
-                if not base_url:
-                    st.error("Please enter your app URL to generate shareable link.")
-                else:
-                    form_id = str(uuid.uuid4())[:10]
-                    forms = meta.get("forms", {})
+                form_name = st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                base_url = st.text_input("Your Streamlit App Public URL (e.g. https://yourapp.streamlit.app)")
 
-                    forms[form_id] = {
-                        "form_name": form_name,
-                        "columns": list(df.columns),
-                        "dropdowns": dropdowns,
-                        "created_at": datetime.now().isoformat(),
-                    }
+                sender_email = st.text_input("Your Gmail Address:")
+                password = st.text_input("Your Gmail App Password:", type="password")
 
-                    meta["forms"] = forms
-                    save_meta(meta)
+                if st.button("🚀 Create Form & Send Emails"):
+                    if not base_url:
+                        st.error("Please enter your app URL to generate the link.")
+                    elif not sender_email or not password:
+                        st.error("Please enter Gmail and App Password to send emails.")
+                    else:
+                        form_id = str(uuid.uuid4())[:10]
+                        forms = meta.get("forms", {})
+                        forms[form_id] = {
+                            "form_name": form_name,
+                            "columns": list(df_form.columns),
+                            "dropdowns": dropdowns,
+                            "created_at": datetime.now().isoformat(),
+                        }
+                        meta["forms"] = forms
+                        save_meta(meta)
 
-                    link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id}"
-                    st.success("✅ Form created successfully!")
-                    st.info("Share this link with others to fill the form:")
-                    st.code(link)
+                        link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id}"
+                        st.success(f"✅ Form created successfully!\n{link}")
 
-                    # ----------------------------
-                    # 📧 EMAIL SEND FEATURE
-                    # ----------------------------
-                    st.markdown("---")
-                    st.subheader("📧 Send Form Link via Email")
+                        st.info("📧 Sending form link to all members...")
 
-                    sender_email = st.text_input("Your Gmail address:")
-                    password = st.text_input("Your Gmail App Password (not your login password)", type="password")
-                    receiver_email = st.text_input("Recipient Email:")
-                    email_message = st.text_area(
-                        "Optional message:",
-                        f"Hi,\n\nPlease fill out this form:\n{link}\n\nThanks!"
-                    )
+                        emails = df_members["Email"].dropna().unique().tolist()
+                        subject = f"Form Invitation: {form_name}"
+                        message = f"Hello,\n\nPlease fill out the form below:\n{link}\n\nThank you!"
 
-                    if st.button("📨 Send Email"):
-                        if not sender_email or not password or not receiver_email:
-                            st.error("Please fill all required fields.")
-                        else:
-                            try:
-                                msg = MIMEMultipart()
-                                msg["From"] = sender_email
-                                msg["To"] = receiver_email
-                                msg["Subject"] = f"Form Link: {form_name}"
-                                msg.attach(MIMEText(email_message, "plain"))
+                        sent_count = send_email_to_members(sender_email, password, emails, subject, message)
 
-                                with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                                    server.starttls()
-                                    server.login(sender_email, password)
-                                    server.send_message(msg)
-
-                                st.success(f"✅ Email sent successfully to {receiver_email}!")
-                            except Exception as e:
-                                st.error(f"❌ Error sending email: {e}")
+                        st.success(f"🎉 Email sent to {sent_count} members successfully!")
 
         except Exception as e:
-            st.error(f"Error processing file: {e}")
-
-    st.markdown("---")
-    st.subheader("📊 Existing Forms")
-
-    forms = meta.get("forms", {})
-    if forms:
-        df_forms = pd.DataFrame([
-            {"Form ID": fid, "Form Name": fdata["form_name"], "Created": fdata["created_at"]}
-            for fid, fdata in forms.items()
-        ])
-        st.dataframe(df_forms)
-
-        st.markdown("---")
-        st.subheader("📈 Responses Dashboard")
-
-        if os.path.exists(ALL_RESPONSES_PATH):
-            try:
-                df_responses = pd.read_excel(ALL_RESPONSES_PATH)
-                if not df_responses.empty:
-                    st.success(f"✅ {len(df_responses)} total responses found")
-                    st.dataframe(df_responses, use_container_width=True)
-
-                    # 🔽 Select which form to export
-                    selected_form_export = st.selectbox(
-                        "Select Form to Download:",
-                        ["All"] + [f["form_name"] for f in forms.values()],
-                        key="download_form_select"
-                    )
-
-                    export_df = df_responses.copy()
-                    if selected_form_export != "All":
-                        selected_form_id = [
-                            fid for fid, f in forms.items() if f["form_name"] == selected_form_export
-                        ][0]
-                        export_df = export_df[export_df["FormID"] == selected_form_id]
-
-                        original_columns = forms[selected_form_id]["columns"]
-                        export_df = export_df[original_columns]
-
-                    # 🔽 Download Excel version
-                    buffer = BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        export_df.to_excel(writer, index=False, sheet_name="Responses")
-                    st.download_button(
-                        label="⬇️ Download Responses (Excel)",
-                        data=buffer.getvalue(),
-                        file_name="form_responses.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-
-                else:
-                    st.info("No responses submitted yet.")
-            except Exception as e:
-                st.error(f"Error reading all responses: {e}")
-        else:
-            st.info("No responses file found yet.")
-    else:
-        st.info("No forms created yet.")
+            st.error(f"❌ Error processing files: {e}")
