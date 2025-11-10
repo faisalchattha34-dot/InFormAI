@@ -3,12 +3,14 @@ import pandas as pd
 import os
 import json
 import uuid
-import urllib.parse
-from io import BytesIO
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 import re
+from io import BytesIO
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ----------------------------
 # Setup
@@ -19,6 +21,8 @@ st.title("📄 Auto Form Creator from Excel")
 DATA_DIR = "data_store"
 os.makedirs(DATA_DIR, exist_ok=True)
 META_PATH = os.path.join(DATA_DIR, "meta.json")
+ALL_RESPONSES_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
+
 
 # ----------------------------
 # Helper Functions
@@ -29,9 +33,11 @@ def load_meta():
             return json.load(f)
     return {}
 
+
 def save_meta(meta):
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
+
 
 def detect_dropdowns(excel_file, df_columns):
     excel_file.seek(0)
@@ -71,16 +77,6 @@ def detect_dropdowns(excel_file, df_columns):
                 continue
     return dropdowns
 
-def read_submissions(form_id):
-    path = os.path.join(DATA_DIR, f"submissions_{form_id}.xlsx")
-    if os.path.exists(path):
-        return pd.read_excel(path)
-    return pd.DataFrame()
-
-def save_submissions(form_id, df):
-    path = os.path.join(DATA_DIR, f"submissions_{form_id}.xlsx")
-    df.to_excel(path, index=False)
-    return path
 
 # ----------------------------
 # URL Params
@@ -92,7 +88,7 @@ form_id = params.get("form_id", [None])[0]
 meta = load_meta()
 
 # ----------------------------
-# FORM VIEW
+# FORM VIEW (User fills form)
 # ----------------------------
 if mode == "form":
     if not form_id or "forms" not in meta or form_id not in meta["forms"]:
@@ -100,23 +96,57 @@ if mode == "form":
     else:
         info = meta["forms"][form_id]
         st.header(f"🧾 {info['form_name']}")
+
+        # ✅ Persistent session per browser
+        if "session_id" not in st.session_state:
+            st.session_state["session_id"] = str(uuid.uuid4())[:8]
+        session_id = st.session_state["session_id"]
+        st.caption(f"🆔 Your Session ID: {session_id}")
+
         dropdowns = info.get("dropdowns", {})
         columns = info["columns"]
 
-        values = {}
-        for col in columns:
-            if col in dropdowns:
-                values[col] = st.selectbox(col, dropdowns[col])
-            else:
-                values[col] = st.text_input(col)
+        # ✅ Create form dynamically
+        with st.form("user_form", clear_on_submit=False):
+            values = {}
+            for col in columns:
+                if col in dropdowns:
+                    values[col] = st.selectbox(col, dropdowns[col], key=f"{col}_{session_id}")
+                else:
+                    values[col] = st.text_input(col, key=f"{col}_{session_id}")
 
-        if st.button("✅ Submit"):
-            row = {"SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            submitted = st.form_submit_button("✅ Submit Response")
+
+        if submitted:
+            row = {
+                "FormID": form_id,
+                "FormName": info["form_name"],
+                "UserSession": session_id,
+                "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
             row.update(values)
-            subs = read_submissions(form_id)
-            subs = pd.concat([subs, pd.DataFrame([row])], ignore_index=True)
-            save_submissions(form_id, subs)
-            st.success("🎉 Your response has been saved successfully!")
+
+            try:
+                # ✅ Ensure master Excel exists
+                if not os.path.exists(ALL_RESPONSES_PATH):
+                    pd.DataFrame(columns=list(row.keys())).to_excel(ALL_RESPONSES_PATH, index=False)
+
+                existing = pd.read_excel(ALL_RESPONSES_PATH)
+
+                # Add any new columns dynamically
+                for col in row.keys():
+                    if col not in existing.columns:
+                        existing[col] = None
+
+                new_row_df = pd.DataFrame([row])
+                combined = pd.concat([existing, new_row_df], ignore_index=True)
+                combined.to_excel(ALL_RESPONSES_PATH, index=False)
+
+                st.success("🎉 Response saved successfully! You can add more without refreshing.")
+                st.balloons()
+
+            except Exception as e:
+                st.error(f"❌ Error saving data: {e}")
 
 # ----------------------------
 # ADMIN VIEW
@@ -148,30 +178,62 @@ else:
                 else:
                     form_id = str(uuid.uuid4())[:10]
                     forms = meta.get("forms", {})
+
                     forms[form_id] = {
                         "form_name": form_name,
                         "columns": list(df.columns),
                         "dropdowns": dropdowns,
                         "created_at": datetime.now().isoformat(),
                     }
+
                     meta["forms"] = forms
                     save_meta(meta)
-
-                    # Create empty submissions file
-                    pd.DataFrame(columns=["SubmittedAt"] + list(df.columns)).to_excel(
-                        os.path.join(DATA_DIR, f"submissions_{form_id}.xlsx"), index=False
-                    )
 
                     link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id}"
                     st.success("✅ Form created successfully!")
                     st.info("Share this link with others to fill the form:")
                     st.code(link)
 
+                    # ----------------------------
+                    # 📧 EMAIL SEND FEATURE
+                    # ----------------------------
+                    st.markdown("---")
+                    st.subheader("📧 Send Form Link via Email")
+
+                    sender_email = st.text_input("Your Gmail address:")
+                    password = st.text_input("Your Gmail App Password (not your login password)", type="password")
+                    receiver_email = st.text_input("Recipient Email:")
+                    email_message = st.text_area(
+                        "Optional message:",
+                        f"Hi,\n\nPlease fill out this form:\n{link}\n\nThanks!"
+                    )
+
+                    if st.button("📨 Send Email"):
+                        if not sender_email or not password or not receiver_email:
+                            st.error("Please fill all required fields.")
+                        else:
+                            try:
+                                msg = MIMEMultipart()
+                                msg["From"] = sender_email
+                                msg["To"] = receiver_email
+                                msg["Subject"] = f"Form Link: {form_name}"
+                                msg.attach(MIMEText(email_message, "plain"))
+
+                                with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                                    server.starttls()
+                                    server.login(sender_email, password)
+                                    server.send_message(msg)
+
+                                st.success(f"✅ Email sent successfully to {receiver_email}!")
+                            except Exception as e:
+                                st.error(f"❌ Error sending email: {e}")
+
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
     st.markdown("---")
     st.subheader("📊 Existing Forms")
+
     forms = meta.get("forms", {})
     if forms:
         df_forms = pd.DataFrame([
@@ -179,5 +241,50 @@ else:
             for fid, fdata in forms.items()
         ])
         st.dataframe(df_forms)
+
+        st.markdown("---")
+        st.subheader("📈 Responses Dashboard")
+
+        if os.path.exists(ALL_RESPONSES_PATH):
+            try:
+                df_responses = pd.read_excel(ALL_RESPONSES_PATH)
+                if not df_responses.empty:
+                    st.success(f"✅ {len(df_responses)} total responses found")
+                    st.dataframe(df_responses, use_container_width=True)
+
+                    # 🔽 Select which form to export
+                    selected_form_export = st.selectbox(
+                        "Select Form to Download:",
+                        ["All"] + [f["form_name"] for f in forms.values()],
+                        key="download_form_select"
+                    )
+
+                    export_df = df_responses.copy()
+                    if selected_form_export != "All":
+                        selected_form_id = [
+                            fid for fid, f in forms.items() if f["form_name"] == selected_form_export
+                        ][0]
+                        export_df = export_df[export_df["FormID"] == selected_form_id]
+
+                        original_columns = forms[selected_form_id]["columns"]
+                        export_df = export_df[original_columns]
+
+                    # 🔽 Download Excel version
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        export_df.to_excel(writer, index=False, sheet_name="Responses")
+                    st.download_button(
+                        label="⬇️ Download Responses (Excel)",
+                        data=buffer.getvalue(),
+                        file_name="form_responses.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                else:
+                    st.info("No responses submitted yet.")
+            except Exception as e:
+                st.error(f"Error reading all responses: {e}")
+        else:
+            st.info("No responses file found yet.")
     else:
         st.info("No forms created yet.")
