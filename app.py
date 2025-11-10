@@ -15,8 +15,8 @@ from email.mime.multipart import MIMEMultipart
 # ----------------------------
 # Setup
 # ----------------------------
-st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="centered")
-st.title("📄 Excel → Web Form + Auto Email Sender")
+st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wide")
+st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 
 DATA_DIR = "data_store"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -80,6 +80,14 @@ def send_email_to_members(sender_email, password, members, subject, message):
             results.append({"Email": email, "Status": f"❌ Failed ({e})"})
     return sent_count, results
 
+def load_responses():
+    if os.path.exists(ALL_RESPONSES_PATH):
+        return pd.read_excel(ALL_RESPONSES_PATH)
+    return pd.DataFrame()
+
+def save_responses(df):
+    df.to_excel(ALL_RESPONSES_PATH, index=False)
+
 # ----------------------------
 # URL Params
 # ----------------------------
@@ -127,18 +135,13 @@ if mode == "form":
             row.update(values)
 
             try:
-                if not os.path.exists(ALL_RESPONSES_PATH):
-                    pd.DataFrame(columns=list(row.keys())).to_excel(ALL_RESPONSES_PATH, index=False)
-
-                existing = pd.read_excel(ALL_RESPONSES_PATH)
-
+                responses = load_responses()
                 for col in row.keys():
-                    if col not in existing.columns:
-                        existing[col] = None
+                    if col not in responses.columns:
+                        responses[col] = None
 
-                new_row_df = pd.DataFrame([row])
-                combined = pd.concat([existing, new_row_df], ignore_index=True)
-                combined.to_excel(ALL_RESPONSES_PATH, index=False)
+                responses = pd.concat([responses, pd.DataFrame([row])], ignore_index=True)
+                save_responses(responses)
 
                 st.success("🎉 Response saved successfully!")
                 st.balloons()
@@ -214,5 +217,54 @@ else:
                         st.subheader("📧 Email Send Status")
                         st.table(pd.DataFrame(send_results))
 
-        except Exception as e:
-            st.error(f"❌ Error processing files: {e}")
+    st.markdown("---")
+    st.subheader("📊 Responses Dashboard")
+
+    responses = load_responses()
+    if responses.empty:
+        st.info("No responses submitted yet.")
+    else:
+        form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
+        if form_filter != "All":
+            form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
+            if form_id_list:
+                responses_display = responses[responses["FormID"] == form_id_list[0]]
+            else:
+                responses_display = pd.DataFrame()
+        else:
+            responses_display = responses.copy()
+
+        if not responses_display.empty:
+            st.dataframe(responses_display, use_container_width=True)
+
+            # Edit / Delete functionality
+            for idx, row in responses_display.iterrows():
+                with st.expander(f"✏️ Edit / Delete Response #{idx+1}"):
+                    updated_values = {}
+                    for col in meta["forms"].get(row["FormID"], {}).get("columns", []):
+                        updated_values[col] = st.text_input(col, value=row[col], key=f"{col}_{idx}")
+
+                    col1_btn, col2_btn = st.columns(2)
+                    with col1_btn:
+                        if st.button(f"💾 Update #{idx}", key=f"update_{idx}"):
+                            for k, v in updated_values.items():
+                                responses.loc[responses.index[idx], k] = v
+                            save_responses(responses)
+                            st.success(f"Response #{idx+1} updated!")
+
+                    with col2_btn:
+                        if st.button(f"🗑 Delete #{idx}", key=f"delete_{idx}"):
+                            responses.drop(responses.index[idx], inplace=True)
+                            save_responses(responses)
+                            st.success(f"Response #{idx+1} deleted!")
+
+            # Download button
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                responses_display.to_excel(writer, index=False, sheet_name="Responses")
+            st.download_button(
+                label="⬇️ Download Responses (Excel)",
+                data=buffer.getvalue(),
+                file_name="form_responses.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
