@@ -245,10 +245,21 @@ else:
                             save_responses(responses)
                             st.success(f"Response #{idx+1} deleted!")
 
-            # Download Excel
+            # Download Excel (only original form columns)
+            original_form_cols = []
+            if form_filter != "All" and form_id_list:
+                original_form_cols = meta["forms"][form_id_list[0]]["columns"]
+            elif form_filter == "All":
+                all_form_cols = []
+                for f in meta.get("forms", {}).values():
+                    all_form_cols.extend(f["columns"])
+                original_form_cols = list(dict.fromkeys(all_form_cols))  # remove duplicates
+
+            filtered_responses = responses_display[original_form_cols] if original_form_cols else responses_display.copy()
+
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                responses_display.to_excel(writer, index=False, sheet_name="Responses")
+                filtered_responses.to_excel(writer, index=False, sheet_name="Responses")
             st.download_button(
                 label="⬇️ Download Responses (Excel)",
                 data=buffer.getvalue(),
