@@ -22,15 +22,41 @@ st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 st.markdown(
     """
     <style>
-        :root { color-scheme: light dark; }
-        body { background-color: var(--background-color); font-family: 'Arial', sans-serif; }
-        h1, h2, h3, p, label, span, div { color: inherit !important; }
-        [data-baseweb="input"] input, [data-baseweb="select"] select { color: inherit !important; background-color: transparent !important; }
-        .stTextInput, .stSelectbox, .stTextArea, .stDataFrame { border-radius: 8px; padding: 10px; }
-        .stButton>button { background-color: #3498db; color: white; padding: 10px 20px; border-radius: 8px; border: none; font-size: 16px; font-weight: 500; transition: all 0.3s ease; }
-        .stButton>button:hover { background-color: #2980b9; transform: scale(1.03); }
-        .stDownloadButton>button { background-color: #2ecc71; color: white; padding: 10px 20px; border-radius: 8px; border: none; font-size: 16px; font-weight: 500; transition: all 0.3s ease; }
-        .stDownloadButton>button:hover { background-color: #27ae60; transform: scale(1.03); }
+        :root {
+            color-scheme: light dark;
+        }
+        body {
+            background-color: var(--background-color);
+            font-family: 'Arial', sans-serif;
+        }
+        h1, h2, h3, p, label, span, div {
+            color: inherit !important;
+        }
+        [data-baseweb="input"] input,
+        [data-baseweb="select"] select {
+            color: inherit !important;
+            background-color: transparent !important;
+        }
+        .stTextInput, .stSelectbox, .stTextArea, .stDataFrame {
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .stButton>button {
+            background-color: #3498db; color: white; padding: 10px 20px;
+            border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        .stButton>button:hover {
+            background-color: #2980b9; transform: scale(1.03);
+        }
+        .stDownloadButton>button {
+            background-color: #2ecc71; color: white; padding: 10px 20px;
+            border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        .stDownloadButton>button:hover {
+            background-color: #27ae60; transform: scale(1.03);
+        }
     </style>
     """,
     unsafe_allow_html=True
@@ -177,7 +203,7 @@ else:
                     break
             df_form = pd.read_excel(form_file, header=header_row_index if header_row_index is not None else 0)
 
-            # Clean headers
+            # Clean header names
             cleaned_cols = []
             seen = set()
             prev_name = None
@@ -195,11 +221,12 @@ else:
                     prev_name = name
             df_form.columns = cleaned_cols
 
-            # Editable preview + restore deleted columns
+            # Editable preview + recovery
             st.subheader("👀 Edit Form Data (Live Preview)")
 
             if "original_columns" not in st.session_state:
                 st.session_state.original_columns = list(df_form.columns)
+
             if "current_form_df" not in st.session_state:
                 st.session_state.current_form_df = df_form.copy()
 
@@ -258,69 +285,63 @@ else:
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
-            # ----------------------------
-            # Responses Dashboard (CRUD)
-            # ----------------------------
-            st.markdown("---")
-            st.subheader("📊 Responses Dashboard")
-            responses = load_responses()
-            if responses.empty:
-                st.info("No responses submitted yet.")
+            # Continue
+            if "Email" not in df_members.columns:
+                st.error("❌ Member file must contain an 'Email' column.")
             else:
-                form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
-                if form_filter != "All":
-                    form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
-                    responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
-                else:
-                    responses_display = responses.copy()
+                dropdowns = detect_dropdowns(form_file, list(st.session_state.current_form_df.columns))
+                st.success(f"✅ Form fields detected: {len(st.session_state.current_form_df.columns)}")
+                st.write(st.session_state.current_form_df.columns.tolist())
 
-                if not responses_display.empty:
-                    # Hide metadata columns in display/download
-                    hidden_cols = ["FormID", "FormName", "UserSession", "SubmittedAt"]
-                    display_df = responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
+                if dropdowns:
+                    st.info("Detected dropdowns:")
+                    st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
 
-                    if "responses_df" not in st.session_state:
-                        st.session_state.responses_df = display_df.copy()
+                form_name = st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                base_url = st.text_input("Your Streamlit App Public URL (example: https://yourapp.streamlit.app)")
+                sender_email = st.text_input("Your Gmail Address:")
+                password = st.text_input("Your Gmail App Password:", type="password")
 
-                    edited_responses = st.data_editor(
-                        st.session_state.responses_df,
-                        use_container_width=True,
-                        num_rows="dynamic",
-                        key="responses_editor"
-                    )
-                    st.session_state.responses_df = edited_responses.copy()
-
-                    # Insert new row
-                    if st.button("➕ Insert New Response Row"):
-                        new_row = {col: "" for col in st.session_state.responses_df.columns}
-                        st.session_state.responses_df = pd.concat([st.session_state.responses_df, pd.DataFrame([new_row])], ignore_index=True)
-                        st.success("New row inserted!")
-
-                    # Delete selected rows
-                    rows_to_delete = st.multiselect("Select rows to delete (by index):", st.session_state.responses_df.index.tolist())
-                    if rows_to_delete and st.button("🗑️ Delete Selected Rows"):
-                        st.session_state.responses_df.drop(index=rows_to_delete, inplace=True)
-                        st.session_state.responses_df.reset_index(drop=True, inplace=True)
-                        st.success(f"Deleted {len(rows_to_delete)} row(s).")
-
-                    # Save updates back
-                    if st.button("💾 Save Changes to Excel"):
-                        for col in hidden_cols:
-                            if col in responses.columns:
-                                st.session_state.responses_df[col] = responses[col].values[:len(st.session_state.responses_df)]
-                        save_responses(st.session_state.responses_df)
-                        st.success("✅ Responses updated successfully!")
-
-                    # Download
-                    to_download = BytesIO()
-                    st.session_state.responses_df.to_excel(to_download, index=False)
-                    to_download.seek(0)
-                    st.download_button(
-                        label="📥 Download Responses",
-                        data=to_download,
-                        file_name="responses.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
+                if st.button("🚀 Create Form & Send Emails"):
+                    if not base_url:
+                        st.error("Please enter your app URL.")
+                    elif not sender_email or not password:
+                        st.error("Please enter Gmail and App Password.")
+                    else:
+                        form_id_new = str(uuid.uuid4())[:10]
+                        forms = meta.get("forms", {})
+                        forms[form_id_new] = {
+                            "form_name": form_name,
+                            "columns": list(st.session_state.current_form_df.columns),
+                            "dropdowns": dropdowns,
+                            "created_at": datetime.now().isoformat(),
+                        }
+                        meta["forms"] = forms
+                        save_meta(meta)
+                        link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id_new}"
+                        st.success(f"✅ Form created successfully!\n{link}")
+                        st.info("📧 Sending form link to all members...")
+                        emails = df_members["Email"].dropna().unique().tolist()
+                        subject = f"Form Invitation: {form_name}"
+                        message = f"Hello,\n\nPlease fill out the form below:\n{link}\n\nThank you!"
+                        sent_count, send_results = send_email_to_members(sender_email, password, emails, subject, message)
+                        st.success(f"🎉 Emails sent: {sent_count}/{len(emails)}")
+                        st.subheader("📧 Email Send Status")
+                        st.table(pd.DataFrame(send_results))
         except Exception as e:
             st.error(f"❌ Error processing files: {e}")
+
+    st.markdown("---")
+    st.subheader("📊 Responses Dashboard")
+    responses = load_responses()
+    if responses.empty:
+        st.info("No responses submitted yet.")
+    else:
+        form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
+        if form_filter != "All":
+            form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
+            responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
+        else:
+            responses_display = responses.copy()
+        if not responses_display.empty:
+            st.dataframe(responses_display, use_container_width=True)
