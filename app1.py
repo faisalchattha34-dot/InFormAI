@@ -17,32 +17,46 @@ st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wi
 st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 
 # ----------------------------
-# Custom CSS Styling
+# Custom CSS (Dark & Light auto support)
 # ----------------------------
 st.markdown(
     """
     <style>
-        body { background-color: #f4f7fc; font-family: 'Arial', sans-serif; }
-        h1, h2, h3 { color: #2c3e50; font-weight: 700; }
+        :root {
+            color-scheme: light dark;
+        }
+        body {
+            background-color: var(--background-color);
+            font-family: 'Arial', sans-serif;
+        }
+        h1, h2, h3, p, label, span, div {
+            color: inherit !important;
+        }
+        [data-baseweb="input"] input,
+        [data-baseweb="select"] select {
+            color: inherit !important;
+            background-color: transparent !important;
+        }
         .stTextInput, .stSelectbox, .stTextArea, .stDataFrame {
-            background-color: #ffffff !important; border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05); padding: 12px;
+            border-radius: 8px;
+            padding: 10px;
         }
         .stButton>button {
             background-color: #3498db; color: white; padding: 10px 20px;
             border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
             transition: all 0.3s ease;
         }
-        .stButton>button:hover { background-color: #2980b9; transform: scale(1.03); }
+        .stButton>button:hover {
+            background-color: #2980b9; transform: scale(1.03);
+        }
         .stDownloadButton>button {
             background-color: #2ecc71; color: white; padding: 10px 20px;
             border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
             transition: all 0.3s ease;
         }
-        .stDownloadButton>button:hover { background-color: #27ae60; transform: scale(1.03); }
-        .container { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
-        .container > div { flex: 1; min-width: 300px; }
-        .stTable { border-radius: 8px; background-color: white; padding: 10px; box-shadow: 0px 4px 8px rgba(0,0,0,0.05); }
+        .stDownloadButton>button:hover {
+            background-color: #27ae60; transform: scale(1.03);
+        }
     </style>
     """,
     unsafe_allow_html=True
@@ -181,7 +195,6 @@ else:
         try:
             df_members = pd.read_excel(member_file)
 
-            # 🧠 Smart header detection
             excel_data = pd.read_excel(form_file, header=None)
             header_row_index = None
             for i, row in excel_data.iterrows():
@@ -190,7 +203,7 @@ else:
                     break
             df_form = pd.read_excel(form_file, header=header_row_index if header_row_index is not None else 0)
 
-            # 🧹 Clean duplicate/merged headers
+            # Clean header names
             cleaned_cols = []
             seen = set()
             prev_name = None
@@ -208,8 +221,11 @@ else:
                     prev_name = name
             df_form.columns = cleaned_cols
 
-            # ✅ Editable & Syncable Preview
+            # Editable preview + recovery
             st.subheader("👀 Edit Form Data (Live Preview)")
+
+            if "original_columns" not in st.session_state:
+                st.session_state.original_columns = list(df_form.columns)
 
             if "current_form_df" not in st.session_state:
                 st.session_state.current_form_df = df_form.copy()
@@ -220,11 +236,10 @@ else:
                 num_rows="dynamic",
                 key="form_editor",
             )
-
             st.session_state.current_form_df = edited_df.copy()
 
             st.write("### ✏️ Column Management")
-            col_action = st.radio("Select Action", ["None", "Rename Column", "Delete Column", "Add Column"], horizontal=True)
+            col_action = st.radio("Select Action", ["None", "Rename Column", "Delete Column", "Add Column", "Restore Deleted Column"], horizontal=True)
 
             if col_action == "Rename Column":
                 col_to_rename = st.selectbox("Select column to rename", st.session_state.current_form_df.columns)
@@ -248,6 +263,16 @@ else:
                         st.session_state.current_form_df[new_col_name] = ""
                         st.success(f"Column '{new_col_name}' added.")
 
+            elif col_action == "Restore Deleted Column":
+                deleted_cols = [c for c in st.session_state.original_columns if c not in st.session_state.current_form_df.columns]
+                if deleted_cols:
+                    col_to_restore = st.selectbox("Select deleted column to restore", deleted_cols)
+                    if st.button("♻️ Restore Column"):
+                        st.session_state.current_form_df[col_to_restore] = ""
+                        st.success(f"Column '{col_to_restore}' restored successfully.")
+                else:
+                    st.info("No deleted columns found to restore.")
+
             save_changes = st.button("💾 Save Changes to Original Excel File")
             if save_changes:
                 try:
@@ -256,12 +281,11 @@ else:
                         buffer.seek(0)
                         with open(form_file.name, "wb") as f:
                             f.write(buffer.read())
-                    df_form = st.session_state.current_form_df.copy()
                     st.success("✅ All changes saved back to the uploaded Excel file successfully!")
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
-            # Continue workflow
+            # Continue
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
