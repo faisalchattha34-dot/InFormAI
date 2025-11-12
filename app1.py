@@ -240,8 +240,17 @@ else:
                 if deleted_cols:
                     col_to_restore = st.selectbox("Select deleted column to restore", deleted_cols)
                     if st.button("♻️ Restore Column"):
-                        st.session_state.current_form_df[col_to_restore] = ""
-                        st.success(f"Column '{col_to_restore}' restored successfully.")
+                        # Restore at original index
+                        original_idx = st.session_state.original_columns.index(col_to_restore)
+                        cols = list(st.session_state.current_form_df.columns)
+                        cols_before = cols[:original_idx]
+                        cols_after = cols[original_idx:]
+                        new_col_df = pd.DataFrame({col_to_restore: [""] * len(st.session_state.current_form_df)})
+                        st.session_state.current_form_df = pd.concat(
+                            [st.session_state.current_form_df[cols_before], new_col_df, st.session_state.current_form_df[cols_after]],
+                            axis=1
+                        )
+                        st.success(f"Column '{col_to_restore}' restored at its original position!")
                 else:
                     st.info("No deleted columns found to restore.")
 
@@ -257,7 +266,7 @@ else:
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
-            # Continue
+            # Continue workflow
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
@@ -321,13 +330,11 @@ else:
             responses_display = responses.copy()
 
         if not responses_display.empty:
-            # Hide extra metadata columns for display/download
             hidden_cols = ["FormID", "FormName", "UserSession", "SubmittedAt"]
             display_df = responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
 
             st.dataframe(display_df, use_container_width=True)
 
-            # Download button
             to_download = BytesIO()
             display_df.to_excel(to_download, index=False)
             to_download.seek(0)
