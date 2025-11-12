@@ -198,19 +198,27 @@ else:
             else:
                 df_form = pd.read_excel(form_file)
 
-            # 🧹 Clean + merge adjacent blank headers (handle merged cells)
+            # 🧹 Improved merged/duplicate header handling
             cleaned_cols = []
+            seen = set()
             prev_name = None
             for c in df_form.columns:
                 name = str(c).strip() if pd.notna(c) and str(c).strip() else None
-                if not name and prev_name:
-                    continue  # skip merged blank header
+                if not name:
+                    name = prev_name  # fill with previous header if merged
                 if name:
                     name = name.replace("_", " ").title()
+                    if name in seen:
+                        counter = 2
+                        new_name = f"{name}_{counter}"
+                        while new_name in seen:
+                            counter += 1
+                            new_name = f"{name}_{counter}"
+                        name = new_name
+                    seen.add(name)
                     cleaned_cols.append(name)
                     prev_name = name
 
-            df_form = df_form.iloc[:, :len(cleaned_cols)]
             df_form.columns = cleaned_cols
 
             # Continue with normal logic
@@ -284,21 +292,26 @@ else:
             st.dataframe(responses_display, use_container_width=True)
             for idx, row in responses_display.iterrows():
                 with st.expander(f"✏️ Edit / Delete Response #{idx+1}"):
+
                     updated_values = {}
                     for col in meta["forms"].get(row["FormID"], {}).get("columns", []):
                         updated_values[col] = st.text_input(col, value=row[col], key=f"{col}_{idx}")
                     col1_btn, col2_btn = st.columns(2)
                     with col1_btn:
                         if st.button(f"💾 Update #{idx}", key=f"update_{idx}"):
+
                             for k, v in updated_values.items():
                                 responses.loc[responses.index[idx], k] = v
                             save_responses(responses)
                             st.success(f"Response #{idx+1} updated!")
+
                     with col2_btn:
                         if st.button(f"🗑 Delete #{idx}", key=f"delete_{idx}"):
+
                             responses.drop(responses.index[idx], inplace=True)
                             save_responses(responses)
                             st.success(f"Response #{idx+1} deleted!")
+
             original_form_cols = []
             if form_filter != "All" and form_id_list:
                 original_form_cols = meta["forms"][form_id_list[0]]["columns"]
@@ -307,14 +320,17 @@ else:
                 for f in meta.get("forms", {}).values():
                     all_form_cols.extend(f["columns"])
                 original_form_cols = list(dict.fromkeys(all_form_cols))
+
             filtered_responses = (
                 responses_display[original_form_cols]
                 if original_form_cols
                 else responses_display.copy()
             )
+
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                 filtered_responses.to_excel(writer, index=False, sheet_name="Responses")
+
             st.download_button(
                 label="⬇️ Download Responses (Excel)",
                 data=buffer.getvalue(),
