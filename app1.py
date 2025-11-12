@@ -218,18 +218,60 @@ else:
 
             df_form.columns = cleaned_cols
 
-            # ✅ PREVIEW ADDED HERE
-            st.subheader("👀 Preview of Uploaded Form File")
-            st.dataframe(df_form.head(10), use_container_width=True)
+            # ✅ Editable preview
+            st.subheader("👀 Edit Form Data (Live Preview)")
+            edited_df = st.data_editor(
+                df_form.head(50),
+                use_container_width=True,
+                num_rows="dynamic",
+                key="form_editor"
+            )
 
-            # Continue with normal logic
+            st.write("### ✏️ Column Management")
+            col_action = st.radio("Select Action", ["None", "Rename Column", "Delete Column", "Add Column"], horizontal=True)
+
+            if col_action == "Rename Column":
+                col_to_rename = st.selectbox("Select column to rename", edited_df.columns)
+                new_name = st.text_input("Enter new column name:")
+                if st.button("✅ Rename Now"):
+                    edited_df.rename(columns={col_to_rename: new_name}, inplace=True)
+                    st.success(f"Column renamed from '{col_to_rename}' → '{new_name}'")
+
+            elif col_action == "Delete Column":
+                col_to_delete = st.selectbox("Select column to delete", edited_df.columns)
+                if st.button("🗑️ Delete Column"):
+                    edited_df.drop(columns=[col_to_delete], inplace=True)
+                    st.success(f"Column '{col_to_delete}' deleted.")
+
+            elif col_action == "Add Column":
+                new_col_name = st.text_input("Enter new column name:")
+                if st.button("➕ Add Column"):
+                    if new_col_name in edited_df.columns:
+                        st.warning("Column already exists.")
+                    else:
+                        edited_df[new_col_name] = ""
+                        st.success(f"Column '{new_col_name}' added.")
+
+            save_changes = st.button("💾 Save Changes to Original Excel File")
+            if save_changes:
+                try:
+                    with BytesIO() as buffer:
+                        edited_df.to_excel(buffer, index=False)
+                        buffer.seek(0)
+                        with open(form_file.name, "wb") as f:
+                            f.write(buffer.read())
+                    st.success("✅ All changes saved back to the uploaded Excel file successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to save: {e}")
+
+            # Continue workflow
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
-                st.success(f"✅ Form fields detected: {len(df_form.columns)}")
-                st.write(df_form.columns.tolist())
+                dropdowns = detect_dropdowns(form_file, list(edited_df.columns))
+                st.success(f"✅ Form fields detected: {len(edited_df.columns)}")
+                st.write(edited_df.columns.tolist())
 
-                dropdowns = detect_dropdowns(form_file, list(df_form.columns))
                 if dropdowns:
                     st.info("Detected dropdowns:")
                     st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
@@ -249,7 +291,7 @@ else:
                         forms = meta.get("forms", {})
                         forms[form_id_new] = {
                             "form_name": form_name,
-                            "columns": list(df_form.columns),
+                            "columns": list(edited_df.columns),
                             "dropdowns": dropdowns,
                             "created_at": datetime.now().isoformat(),
                         }
