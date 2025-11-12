@@ -22,41 +22,15 @@ st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 st.markdown(
     """
     <style>
-        :root {
-            color-scheme: light dark;
-        }
-        body {
-            background-color: var(--background-color);
-            font-family: 'Arial', sans-serif;
-        }
-        h1, h2, h3, p, label, span, div {
-            color: inherit !important;
-        }
-        [data-baseweb="input"] input,
-        [data-baseweb="select"] select {
-            color: inherit !important;
-            background-color: transparent !important;
-        }
-        .stTextInput, .stSelectbox, .stTextArea, .stDataFrame {
-            border-radius: 8px;
-            padding: 10px;
-        }
-        .stButton>button {
-            background-color: #3498db; color: white; padding: 10px 20px;
-            border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        .stButton>button:hover {
-            background-color: #2980b9; transform: scale(1.03);
-        }
-        .stDownloadButton>button {
-            background-color: #2ecc71; color: white; padding: 10px 20px;
-            border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        .stDownloadButton>button:hover {
-            background-color: #27ae60; transform: scale(1.03);
-        }
+        :root { color-scheme: light dark; }
+        body { background-color: var(--background-color); font-family: 'Arial', sans-serif; }
+        h1, h2, h3, p, label, span, div { color: inherit !important; }
+        [data-baseweb="input"] input, [data-baseweb="select"] select { color: inherit !important; background-color: transparent !important; }
+        .stTextInput, .stSelectbox, .stTextArea, .stDataFrame { border-radius: 8px; padding: 10px; }
+        .stButton>button { background-color: #3498db; color: white; padding: 10px 20px; border-radius: 8px; border: none; font-size: 16px; font-weight: 500; transition: all 0.3s ease; }
+        .stButton>button:hover { background-color: #2980b9; transform: scale(1.03); }
+        .stDownloadButton>button { background-color: #2ecc71; color: white; padding: 10px 20px; border-radius: 8px; border: none; font-size: 16px; font-weight: 500; transition: all 0.3s ease; }
+        .stDownloadButton>button:hover { background-color: #27ae60; transform: scale(1.03); }
     </style>
     """,
     unsafe_allow_html=True
@@ -223,10 +197,8 @@ else:
 
             # Editable preview + recovery
             st.subheader("👀 Edit Form Data (Live Preview)")
-
             if "original_columns" not in st.session_state:
                 st.session_state.original_columns = list(df_form.columns)
-
             if "current_form_df" not in st.session_state:
                 st.session_state.current_form_df = df_form.copy()
 
@@ -328,9 +300,13 @@ else:
                         st.success(f"🎉 Emails sent: {sent_count}/{len(emails)}")
                         st.subheader("📧 Email Send Status")
                         st.table(pd.DataFrame(send_results))
+
         except Exception as e:
             st.error(f"❌ Error processing files: {e}")
 
+    # ----------------------------
+    # Responses Dashboard
+    # ----------------------------
     st.markdown("---")
     st.subheader("📊 Responses Dashboard")
     responses = load_responses()
@@ -343,5 +319,21 @@ else:
             responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
         else:
             responses_display = responses.copy()
+
         if not responses_display.empty:
-            st.dataframe(responses_display, use_container_width=True)
+            # Hide extra metadata columns for display/download
+            hidden_cols = ["FormID", "FormName", "UserSession", "SubmittedAt"]
+            display_df = responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
+
+            st.dataframe(display_df, use_container_width=True)
+
+            # Download button
+            to_download = BytesIO()
+            display_df.to_excel(to_download, index=False)
+            to_download.seek(0)
+            st.download_button(
+                label="📥 Download Responses",
+                data=to_download,
+                file_name="responses.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
