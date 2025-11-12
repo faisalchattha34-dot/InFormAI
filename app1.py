@@ -181,85 +181,82 @@ else:
         try:
             df_members = pd.read_excel(member_file)
 
-            # 🧠 Intelligent Header Detection + Merged Header Handling
+            # 🧠 Smart header detection
             excel_data = pd.read_excel(form_file, header=None)
             header_row_index = None
             for i, row in excel_data.iterrows():
-                non_empty_count = row.count()
-                if non_empty_count >= len(row) / 2:
+                if row.count() >= len(row) / 2:
                     header_row_index = i
                     break
+            df_form = pd.read_excel(form_file, header=header_row_index if header_row_index is not None else 0)
 
-            if header_row_index is not None:
-                df_form = pd.read_excel(form_file, header=header_row_index)
-            else:
-                df_form = pd.read_excel(form_file)
-
-            # 🧹 Improved merged/duplicate header handling
+            # 🧹 Clean duplicate/merged headers
             cleaned_cols = []
             seen = set()
             prev_name = None
             for c in df_form.columns:
-                name = str(c).strip() if pd.notna(c) and str(c).strip() else None
-                if not name:
-                    name = prev_name  # fill with previous header if merged
+                name = str(c).strip() if pd.notna(c) and str(c).strip() else prev_name
                 if name:
                     name = name.replace("_", " ").title()
                     if name in seen:
-                        counter = 2
-                        new_name = f"{name}_{counter}"
-                        while new_name in seen:
-                            counter += 1
-                            new_name = f"{name}_{counter}"
-                        name = new_name
+                        i = 2
+                        while f"{name}_{i}" in seen:
+                            i += 1
+                        name = f"{name}_{i}"
                     seen.add(name)
                     cleaned_cols.append(name)
                     prev_name = name
-
             df_form.columns = cleaned_cols
 
-            # ✅ Editable preview
+            # ✅ Editable & Syncable Preview
             st.subheader("👀 Edit Form Data (Live Preview)")
+
+            if "current_form_df" not in st.session_state:
+                st.session_state.current_form_df = df_form.copy()
+
             edited_df = st.data_editor(
-                df_form.head(50),
+                st.session_state.current_form_df,
                 use_container_width=True,
                 num_rows="dynamic",
-                key="form_editor"
+                key="form_editor",
             )
+
+            st.session_state.current_form_df = edited_df.copy()
 
             st.write("### ✏️ Column Management")
             col_action = st.radio("Select Action", ["None", "Rename Column", "Delete Column", "Add Column"], horizontal=True)
 
             if col_action == "Rename Column":
-                col_to_rename = st.selectbox("Select column to rename", edited_df.columns)
+                col_to_rename = st.selectbox("Select column to rename", st.session_state.current_form_df.columns)
                 new_name = st.text_input("Enter new column name:")
                 if st.button("✅ Rename Now"):
-                    edited_df.rename(columns={col_to_rename: new_name}, inplace=True)
+                    st.session_state.current_form_df.rename(columns={col_to_rename: new_name}, inplace=True)
                     st.success(f"Column renamed from '{col_to_rename}' → '{new_name}'")
 
             elif col_action == "Delete Column":
-                col_to_delete = st.selectbox("Select column to delete", edited_df.columns)
+                col_to_delete = st.selectbox("Select column to delete", st.session_state.current_form_df.columns)
                 if st.button("🗑️ Delete Column"):
-                    edited_df.drop(columns=[col_to_delete], inplace=True)
+                    st.session_state.current_form_df.drop(columns=[col_to_delete], inplace=True)
                     st.success(f"Column '{col_to_delete}' deleted.")
 
             elif col_action == "Add Column":
                 new_col_name = st.text_input("Enter new column name:")
                 if st.button("➕ Add Column"):
-                    if new_col_name in edited_df.columns:
+                    if new_col_name in st.session_state.current_form_df.columns:
                         st.warning("Column already exists.")
                     else:
-                        edited_df[new_col_name] = ""
+                        st.session_state.current_form_df[new_col_name] = ""
                         st.success(f"Column '{new_col_name}' added.")
 
             save_changes = st.button("💾 Save Changes to Original Excel File")
             if save_changes:
                 try:
                     with BytesIO() as buffer:
-                        edited_df.to_excel(buffer, index=False)
+                        st.session_state.current_form_df.to_excel(buffer, index=False)
                         buffer.seek(0)
                         with open(form_file.name, "wb") as f:
                             f.write(buffer.read())
+                    df_form = st.session_state.current_form_df.copy()
                     st.success("✅ All changes saved back to the uploaded Excel file successfully!")
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
@@ -268,9 +265,9 @@ else:
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
-                dropdowns = detect_dropdowns(form_file, list(edited_df.columns))
-                st.success(f"✅ Form fields detected: {len(edited_df.columns)}")
-                st.write(edited_df.columns.tolist())
+                dropdowns = detect_dropdowns(form_file, list(st.session_state.current_form_df.columns))
+                st.success(f"✅ Form fields detected: {len(st.session_state.current_form_df.columns)}")
+                st.write(st.session_state.current_form_df.columns.tolist())
 
                 if dropdowns:
                     st.info("Detected dropdowns:")
@@ -291,7 +288,7 @@ else:
                         forms = meta.get("forms", {})
                         forms[form_id_new] = {
                             "form_name": form_name,
-                            "columns": list(edited_df.columns),
+                            "columns": list(st.session_state.current_form_df.columns),
                             "dropdowns": dropdowns,
                             "created_at": datetime.now().isoformat(),
                         }
@@ -303,9 +300,7 @@ else:
                         emails = df_members["Email"].dropna().unique().tolist()
                         subject = f"Form Invitation: {form_name}"
                         message = f"Hello,\n\nPlease fill out the form below:\n{link}\n\nThank you!"
-                        sent_count, send_results = send_email_to_members(
-                            sender_email, password, emails, subject, message
-                        )
+                        sent_count, send_results = send_email_to_members(sender_email, password, emails, subject, message)
                         st.success(f"🎉 Emails sent: {sent_count}/{len(emails)}")
                         st.subheader("📧 Email Send Status")
                         st.table(pd.DataFrame(send_results))
@@ -318,19 +313,10 @@ else:
     if responses.empty:
         st.info("No responses submitted yet.")
     else:
-        form_filter = st.selectbox(
-            "Select Form to View Responses:",
-            ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()],
-        )
+        form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
         if form_filter != "All":
-            form_id_list = [
-                fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter
-            ]
-            responses_display = (
-                responses[responses["FormID"] == form_id_list[0]]
-                if form_id_list
-                else pd.DataFrame()
-            )
+            form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
+            responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
         else:
             responses_display = responses.copy()
         if not responses_display.empty:
