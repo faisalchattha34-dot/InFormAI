@@ -22,40 +22,15 @@ st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 st.markdown(
     """
     <style>
-        :root {
-            color-scheme: light dark;
-        }
-        body {
-            font-family: 'Arial', sans-serif;
-        }
-        h1, h2, h3, p, label, span, div {
-            color: inherit !important;
-        }
-        [data-baseweb="input"] input,
-        [data-baseweb="select"] select {
-            color: inherit !important;
-            background-color: transparent !important;
-        }
-        .stTextInput, .stSelectbox, .stTextArea, .stDataFrame {
-            border-radius: 8px;
-            padding: 10px;
-        }
-        .stButton>button {
-            background-color: #3498db; color: white; padding: 10px 20px;
-            border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        .stButton>button:hover {
-            background-color: #2980b9; transform: scale(1.03);
-        }
-        .stDownloadButton>button {
-            background-color: #2ecc71; color: white; padding: 10px 20px;
-            border-radius: 8px; border: none; font-size: 16px; font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        .stDownloadButton>button:hover {
-            background-color: #27ae60; transform: scale(1.03);
-        }
+        :root { color-scheme: light dark; }
+        body { background-color: var(--background-color); font-family: 'Arial', sans-serif; }
+        h1, h2, h3, p, label, span, div { color: inherit !important; }
+        [data-baseweb="input"] input, [data-baseweb="select"] select { color: inherit !important; background-color: transparent !important; }
+        .stTextInput, .stSelectbox, .stTextArea, .stDataFrame { border-radius: 8px; padding: 10px; }
+        .stButton>button { background-color: #3498db; color: white; padding: 10px 20px; border-radius: 8px; border: none; font-size: 16px; font-weight: 500; transition: all 0.3s ease; }
+        .stButton>button:hover { background-color: #2980b9; transform: scale(1.03); }
+        .stDownloadButton>button { background-color: #2ecc71; color: white; padding: 10px 20px; border-radius: 8px; border: none; font-size: 16px; font-weight: 500; transition: all 0.3s ease; }
+        .stDownloadButton>button:hover { background-color: #27ae60; transform: scale(1.03); }
     </style>
     """,
     unsafe_allow_html=True
@@ -193,6 +168,7 @@ else:
     if member_file and form_file:
         try:
             df_members = pd.read_excel(member_file)
+
             excel_data = pd.read_excel(form_file, header=None)
             header_row_index = None
             for i, row in excel_data.iterrows():
@@ -219,12 +195,10 @@ else:
                     prev_name = name
             df_form.columns = cleaned_cols
 
-            # Editable preview + restore
+            # Editable preview + recovery
             st.subheader("👀 Edit Form Data (Live Preview)")
-
             if "original_columns" not in st.session_state:
                 st.session_state.original_columns = list(df_form.columns)
-
             if "current_form_df" not in st.session_state:
                 st.session_state.current_form_df = df_form.copy()
 
@@ -266,18 +240,8 @@ else:
                 if deleted_cols:
                     col_to_restore = st.selectbox("Select deleted column to restore", deleted_cols)
                     if st.button("♻️ Restore Column"):
-                        original_index = st.session_state.original_columns.index(col_to_restore)
-                        current_cols = list(st.session_state.current_form_df.columns)
-                        if original_index >= len(current_cols):
-                            st.session_state.current_form_df[col_to_restore] = ""
-                        else:
-                            left_part = current_cols[:original_index]
-                            right_part = current_cols[original_index:]
-                            st.session_state.current_form_df = st.session_state.current_form_df.reindex(
-                                columns=left_part + [col_to_restore] + right_part,
-                                fill_value=""
-                            )
-                        st.success(f"Column '{col_to_restore}' restored to its original position ✅")
+                        st.session_state.current_form_df[col_to_restore] = ""
+                        st.success(f"Column '{col_to_restore}' restored successfully.")
                 else:
                     st.info("No deleted columns found to restore.")
 
@@ -289,7 +253,7 @@ else:
                         buffer.seek(0)
                         with open(form_file.name, "wb") as f:
                             f.write(buffer.read())
-                    st.success("✅ All changes saved successfully!")
+                    st.success("✅ All changes saved back to the uploaded Excel file successfully!")
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
@@ -336,9 +300,13 @@ else:
                         st.success(f"🎉 Emails sent: {sent_count}/{len(emails)}")
                         st.subheader("📧 Email Send Status")
                         st.table(pd.DataFrame(send_results))
+
         except Exception as e:
             st.error(f"❌ Error processing files: {e}")
 
+    # ----------------------------
+    # Responses Dashboard
+    # ----------------------------
     st.markdown("---")
     st.subheader("📊 Responses Dashboard")
     responses = load_responses()
@@ -351,5 +319,19 @@ else:
             responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
         else:
             responses_display = responses.copy()
+
         if not responses_display.empty:
-            st.dataframe(responses_display, use_container_width=True)
+            # Hide extra metadata columns for display/download
+            hidden_cols = ["FormID", "FormName", "UserSession", "SubmittedAt"]
+            display_df = responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
+
+            st.dataframe(display_df, use_container_width=True)
+
+            # Download button
+            to_download = BytesIO()
+            display_df.to_excel(to_download, index=False)
+            to_download.seek(0)
+            st.download_button(
+                label="📥 Download Responses",
+                data=to_download,
+                file_name="respon_
