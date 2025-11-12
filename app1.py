@@ -27,13 +27,11 @@ st.markdown(
             font-family: 'Arial', sans-serif;
         }
 
-        /* Headers */
         h1, h2, h3 {
             color: #2c3e50;
             font-weight: 700;
         }
 
-        /* Form Inputs and Containers */
         .stTextInput, .stSelectbox, .stTextArea, .stDataFrame {
             background-color: #ffffff !important;
             border-radius: 8px;
@@ -41,7 +39,6 @@ st.markdown(
             padding: 12px;
         }
 
-        /* Buttons */
         .stButton>button {
             background-color: #3498db;
             color: white;
@@ -58,7 +55,6 @@ st.markdown(
             transform: scale(1.03);
         }
 
-        /* Download Button */
         .stDownloadButton>button {
             background-color: #2ecc71;
             color: white;
@@ -75,7 +71,6 @@ st.markdown(
             transform: scale(1.03);
         }
 
-        /* Flexbox Layout */
         .container {
             display: flex;
             justify-content: space-between;
@@ -89,7 +84,6 @@ st.markdown(
             min-width: 300px;
         }
 
-        /* Tables */
         .stTable {
             border-radius: 8px;
             background-color: white;
@@ -244,12 +238,36 @@ else:
     if member_file and form_file:
         try:
             df_members = pd.read_excel(member_file)
-            df_form = pd.read_excel(form_file)
 
+            # ----------------------------
+            # 🧠 Intelligent Header Detection
+            # ----------------------------
+            excel_data = pd.read_excel(form_file, header=None)
+            header_row_index = None
+            for i, row in excel_data.iterrows():
+                non_empty_count = row.count()
+                if non_empty_count >= len(row) / 2:  # if more than half filled
+                    header_row_index = i
+                    break
+
+            if header_row_index is not None:
+                df_form = pd.read_excel(form_file, header=header_row_index)
+            else:
+                df_form = pd.read_excel(form_file)
+
+            # Clean up column names
+            df_form.columns = [
+                str(c).strip().replace("_", " ").title()
+                for c in df_form.columns
+                if pd.notna(c)
+            ]
+
+            # ----------------------------
+            # Continue normal logic
+            # ----------------------------
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
-                df_form.columns = [str(c).strip().replace("_", " ").title() for c in df_form.columns if pd.notna(c)]
                 st.success(f"✅ Form fields detected: {len(df_form.columns)}")
                 st.write(df_form.columns.tolist())
 
@@ -322,7 +340,6 @@ else:
         if not responses_display.empty:
             st.dataframe(responses_display, use_container_width=True)
 
-            # Edit / Delete
             for idx, row in responses_display.iterrows():
                 with st.expander(f"✏️ Edit / Delete Response #{idx+1}"):
                     updated_values = {}
@@ -345,7 +362,6 @@ else:
                             save_responses(responses)
                             st.success(f"Response #{idx+1} deleted!")
 
-            # Download Excel
             original_form_cols = []
             if form_filter != "All" and form_id_list:
                 original_form_cols = meta["forms"][form_id_list[0]]["columns"]
