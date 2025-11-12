@@ -119,7 +119,6 @@ def save_responses(df):
 params = st.experimental_get_query_params()
 mode = params.get("mode", ["admin"])[0]
 form_id = params.get("form_id", [None])[0]
-
 meta = load_meta()
 
 # ----------------------------
@@ -172,13 +171,11 @@ if mode == "form":
 else:
     st.header("🧑‍💼 Admin Panel")
     st.write("Upload two Excel files — Member List & Form Source.")
-    st.markdown('<div class="container">', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
         member_file = st.file_uploader("📋 Upload Member List (must have 'Email' column)", type=["xlsx"])
     with col2:
         form_file = st.file_uploader("📄 Upload Form Source File", type=["xlsx"])
-    st.markdown('</div>', unsafe_allow_html=True)
 
     if member_file and form_file:
         try:
@@ -221,16 +218,22 @@ else:
 
             df_form.columns = cleaned_cols
 
+            # ✅ PREVIEW ADDED HERE
+            st.subheader("👀 Preview of Uploaded Form File")
+            st.dataframe(df_form.head(10), use_container_width=True)
+
             # Continue with normal logic
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
                 st.success(f"✅ Form fields detected: {len(df_form.columns)}")
                 st.write(df_form.columns.tolist())
+
                 dropdowns = detect_dropdowns(form_file, list(df_form.columns))
                 if dropdowns:
                     st.info("Detected dropdowns:")
                     st.table(pd.DataFrame([{"Field": k, "Options": ", ".join(v)} for k, v in dropdowns.items()]))
+
                 form_name = st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 base_url = st.text_input("Your Streamlit App Public URL (example: https://yourapp.streamlit.app)")
                 sender_email = st.text_input("Your Gmail Address:")
@@ -290,50 +293,3 @@ else:
             responses_display = responses.copy()
         if not responses_display.empty:
             st.dataframe(responses_display, use_container_width=True)
-            for idx, row in responses_display.iterrows():
-                with st.expander(f"✏️ Edit / Delete Response #{idx+1}"):
-
-                    updated_values = {}
-                    for col in meta["forms"].get(row["FormID"], {}).get("columns", []):
-                        updated_values[col] = st.text_input(col, value=row[col], key=f"{col}_{idx}")
-                    col1_btn, col2_btn = st.columns(2)
-                    with col1_btn:
-                        if st.button(f"💾 Update #{idx}", key=f"update_{idx}"):
-
-                            for k, v in updated_values.items():
-                                responses.loc[responses.index[idx], k] = v
-                            save_responses(responses)
-                            st.success(f"Response #{idx+1} updated!")
-
-                    with col2_btn:
-                        if st.button(f"🗑 Delete #{idx}", key=f"delete_{idx}"):
-
-                            responses.drop(responses.index[idx], inplace=True)
-                            save_responses(responses)
-                            st.success(f"Response #{idx+1} deleted!")
-
-            original_form_cols = []
-            if form_filter != "All" and form_id_list:
-                original_form_cols = meta["forms"][form_id_list[0]]["columns"]
-            elif form_filter == "All":
-                all_form_cols = []
-                for f in meta.get("forms", {}).values():
-                    all_form_cols.extend(f["columns"])
-                original_form_cols = list(dict.fromkeys(all_form_cols))
-
-            filtered_responses = (
-                responses_display[original_form_cols]
-                if original_form_cols
-                else responses_display.copy()
-            )
-
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                filtered_responses.to_excel(writer, index=False, sheet_name="Responses")
-
-            st.download_button(
-                label="⬇️ Download Responses (Excel)",
-                data=buffer.getvalue(),
-                file_name="form_responses.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
