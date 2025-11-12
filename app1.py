@@ -26,7 +26,6 @@ st.markdown(
             color-scheme: light dark;
         }
         body {
-            background-color: var(--background-color);
             font-family: 'Arial', sans-serif;
         }
         h1, h2, h3, p, label, span, div {
@@ -194,7 +193,6 @@ else:
     if member_file and form_file:
         try:
             df_members = pd.read_excel(member_file)
-
             excel_data = pd.read_excel(form_file, header=None)
             header_row_index = None
             for i, row in excel_data.iterrows():
@@ -221,7 +219,7 @@ else:
                     prev_name = name
             df_form.columns = cleaned_cols
 
-            # Editable preview + recovery
+            # Editable preview + restore
             st.subheader("👀 Edit Form Data (Live Preview)")
 
             if "original_columns" not in st.session_state:
@@ -268,8 +266,18 @@ else:
                 if deleted_cols:
                     col_to_restore = st.selectbox("Select deleted column to restore", deleted_cols)
                     if st.button("♻️ Restore Column"):
-                        st.session_state.current_form_df[col_to_restore] = ""
-                        st.success(f"Column '{col_to_restore}' restored successfully.")
+                        original_index = st.session_state.original_columns.index(col_to_restore)
+                        current_cols = list(st.session_state.current_form_df.columns)
+                        if original_index >= len(current_cols):
+                            st.session_state.current_form_df[col_to_restore] = ""
+                        else:
+                            left_part = current_cols[:original_index]
+                            right_part = current_cols[original_index:]
+                            st.session_state.current_form_df = st.session_state.current_form_df.reindex(
+                                columns=left_part + [col_to_restore] + right_part,
+                                fill_value=""
+                            )
+                        st.success(f"Column '{col_to_restore}' restored to its original position ✅")
                 else:
                     st.info("No deleted columns found to restore.")
 
@@ -281,7 +289,7 @@ else:
                         buffer.seek(0)
                         with open(form_file.name, "wb") as f:
                             f.write(buffer.read())
-                    st.success("✅ All changes saved back to the uploaded Excel file successfully!")
+                    st.success("✅ All changes saved successfully!")
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
