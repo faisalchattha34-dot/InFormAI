@@ -5,8 +5,6 @@ import json
 import uuid
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.utils import column_index_from_string
-import re
 from io import BytesIO
 import smtplib
 from email.mime.text import MIMEText
@@ -18,14 +16,108 @@ from email.mime.multipart import MIMEMultipart
 st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wide")
 st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 
+# Add custom CSS for styling
+st.markdown(
+    """
+    <style>
+        /* Background and Padding */
+        body {
+            background-color: #f4f7fc; /* Light blue background */
+            padding: 20px;
+            font-family: 'Arial', sans-serif;
+        }
+
+        /* Header */
+        h1, h2, h3 {
+            color: #2c3e50;
+            font-weight: bold;
+        }
+
+        /* Form Styling */
+        .stTextInput, .stSelectbox, .stButton, .stTextArea {
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+            padding: 10px 15px;
+            margin-bottom: 20px;
+        }
+
+        /* Submit Button */
+        .stButton>button {
+            background-color: #3498db;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .stButton>button:hover {
+            background-color: #2980b9;
+        }
+
+        /* Flexbox Layout */
+        .container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .container > div {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        /* Table Styling */
+        .stTable {
+            background-color: #ffffff;
+            box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        /* Response Table Column Headers */
+        .stTable thead {
+            background-color: #2980b9;
+            color: white;
+        }
+
+        .stTable td, .stTable th {
+            padding: 12px 15px;
+            text-align: left;
+        }
+
+        /* Download Button */
+        .stDownloadButton>button {
+            background-color: #2ecc71;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .stDownloadButton>button:hover {
+            background-color: #27ae60;
+        }
+    </style>
+    """, unsafe_allow_html=True
+)
+
+# ----------------------------
+# Helper Functions
+# ----------------------------
 DATA_DIR = "data_store"
 os.makedirs(DATA_DIR, exist_ok=True)
 META_PATH = os.path.join(DATA_DIR, "meta.json")
 ALL_RESPONSES_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
 
-# ----------------------------
-# Helper Functions
-# ----------------------------
 def load_meta():
     if os.path.exists(META_PATH):
         with open(META_PATH, "r", encoding="utf-8") as f:
@@ -46,10 +138,7 @@ def detect_dropdowns(excel_file, df_columns):
             try:
                 if dv.type == "list" and dv.formula1:
                     formula = str(dv.formula1).strip('"')
-                    if "," in formula:
-                        options = [x.strip() for x in formula.split(",")]
-                    else:
-                        options = []
+                    options = [x.strip() for x in formula.split(",")] if "," in formula else []
                     for cell_range in dv.cells:
                         cidx = cell_range.min_col - 1
                         if 0 <= cidx < len(df_columns):
@@ -98,7 +187,7 @@ form_id = params.get("form_id", [None])[0]
 meta = load_meta()
 
 # ----------------------------
-# FORM VIEW (Users fill form)
+# FORM VIEW
 # ----------------------------
 if mode == "form":
     if not form_id or "forms" not in meta or form_id not in meta["forms"]:
@@ -110,7 +199,6 @@ if mode == "form":
         if "session_id" not in st.session_state:
             st.session_state["session_id"] = str(uuid.uuid4())[:8]
         session_id = st.session_state["session_id"]
-        st.caption(f"🆔 Your Session ID: {session_id}")
 
         dropdowns = info.get("dropdowns", {})
         columns = info["columns"]
@@ -142,7 +230,6 @@ if mode == "form":
 
                 responses = pd.concat([responses, pd.DataFrame([row])], ignore_index=True)
                 save_responses(responses)
-
                 st.success("🎉 Response saved successfully!")
                 st.balloons()
             except Exception as e:
@@ -155,11 +242,16 @@ else:
     st.header("🧑‍💼 Admin Panel")
     st.write("Upload two Excel files — Member List & Form Source.")
 
+    # Flexbox layout for the file uploaders
+    st.markdown('<div class="container">', unsafe_allow_html=True)
+    
     col1, col2 = st.columns(2)
     with col1:
         member_file = st.file_uploader("📋 Upload Member List (must have 'Email' column)", type=["xlsx"])
     with col2:
         form_file = st.file_uploader("📄 Upload Form Source File", type=["xlsx"])
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
     if member_file and form_file:
         try:
@@ -180,91 +272,4 @@ else:
 
                 form_name = st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 base_url = st.text_input("Your Streamlit App Public URL (example: https://yourapp.streamlit.app)")
-
-                sender_email = st.text_input("Your Gmail Address:")
-                password = st.text_input("Your Gmail App Password:", type="password")
-
-                if st.button("🚀 Create Form & Send Emails"):
-                    if not base_url:
-                        st.error("Please enter your app URL to generate the link.")
-                    elif not sender_email or not password:
-                        st.error("Please enter Gmail and App Password to send emails.")
-                    else:
-                        form_id = str(uuid.uuid4())[:10]
-                        forms = meta.get("forms", {})
-                        forms[form_id] = {
-                            "form_name": form_name,
-                            "columns": list(df_form.columns),
-                            "dropdowns": dropdowns,
-                            "created_at": datetime.now().isoformat(),
-                        }
-                        meta["forms"] = forms
-                        save_meta(meta)
-
-                        link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id}"
-                        st.success(f"✅ Form created successfully!\n{link}")
-
-                        st.info("📧 Sending form link to all members...")
-
-                        emails = df_members["Email"].dropna().unique().tolist()
-                        subject = f"Form Invitation: {form_name}"
-                        message = f"Hello,\n\nPlease fill out the form below:\n{link}\n\nThank you!"
-
-                        sent_count, send_results = send_email_to_members(sender_email, password, emails, subject, message)
-
-                        st.success(f"🎉 Emails sent: {sent_count}/{len(emails)}")
-
-                        st.subheader("📧 Email Send Status")
-                        st.table(pd.DataFrame(send_results))
-
-    st.markdown("---")
-    st.subheader("📊 Responses Dashboard")
-
-    responses = load_responses()
-    if responses.empty:
-        st.info("No responses submitted yet.")
-    else:
-        form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
-        if form_filter != "All":
-            form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
-            if form_id_list:
-                responses_display = responses[responses["FormID"] == form_id_list[0]]
-            else:
-                responses_display = pd.DataFrame()
-        else:
-            responses_display = responses.copy()
-
-        if not responses_display.empty:
-            st.dataframe(responses_display, use_container_width=True)
-
-            # Edit / Delete functionality
-            for idx, row in responses_display.iterrows():
-                with st.expander(f"✏️ Edit / Delete Response #{idx+1}"):
-                    updated_values = {}
-                    for col in meta["forms"].get(row["FormID"], {}).get("columns", []):
-                        updated_values[col] = st.text_input(col, value=row[col], key=f"{col}_{idx}")
-
-                    col1_btn, col2_btn = st.columns(2)
-                    with col1_btn:
-                        if st.button(f"💾 Update #{idx}", key=f"update_{idx}"):
-                            for k, v in updated_values.items():
-                                responses.loc[responses.index[idx], k] = v
-                            save_responses(responses)
-                            st.success(f"Response #{idx+1} updated!")
-
-                    with col2_btn:
-                        if st.button(f"🗑 Delete #{idx}", key=f"delete_{idx}"):
-                            responses.drop(responses.index[idx], inplace=True)
-                            save_responses(responses)
-                            st.success(f"Response #{idx+1} deleted!")
-
-            # Download button
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                responses_display.to_excel(writer, index=False, sheet_name="Responses")
-            st.download_button(
-                label="⬇️ Download Responses (Excel)",
-                data=buffer.getvalue(),
-                file_name="form_responses.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+                sender
