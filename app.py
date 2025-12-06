@@ -22,6 +22,9 @@ st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 st.markdown("""
 <style>
 :root { color-scheme: light dark; }
+body { background-color: var(--background-color); font-family: 'Arial', sans-serif; }
+h1,h2,h3,p,label,span,div { color: inherit !important; }
+[data-baseweb="input"] input, [data-baseweb="select"] select { color: inherit !important; background-color: transparent !important; }
 .stTextInput,.stSelectbox,.stTextArea,.stDataFrame { border-radius:8px; padding:10px; }
 .stButton>button { background-color:#3498db;color:white;padding:10px 20px;border-radius:8px;border:none;font-size:16px;font-weight:500;transition:all 0.3s ease;}
 .stButton>button:hover { background-color:#2980b9; transform: scale(1.03);}
@@ -206,20 +209,22 @@ else:
             )
             st.session_state.current_form_df=edited_df.copy()
 
-            # Column Management (Rename/Add/Delete/Restore)
             st.write("### ✏️ Column Management")
             col_action=st.radio("Select Action", ["None","Rename Column","Delete Column","Add Column","Restore Deleted Column"], horizontal=True)
+
             if col_action=="Rename Column":
                 col_to_rename=st.selectbox("Select column to rename", st.session_state.current_form_df.columns)
                 new_name=st.text_input("Enter new column name:")
                 if st.button("✅ Rename Now"):
                     st.session_state.current_form_df.rename(columns={col_to_rename:new_name}, inplace=True)
                     st.success(f"Column renamed from '{col_to_rename}' → '{new_name}'")
+
             elif col_action=="Delete Column":
                 col_to_delete=st.selectbox("Select column to delete", st.session_state.current_form_df.columns)
                 if st.button("🗑️ Delete Column"):
                     st.session_state.current_form_df.drop(columns=[col_to_delete], inplace=True)
                     st.success(f"Column '{col_to_delete}' deleted.")
+
             elif col_action=="Add Column":
                 new_col_name=st.text_input("Enter new column name:")
                 if st.button("➕ Add Column"):
@@ -228,6 +233,7 @@ else:
                     else:
                         st.session_state.current_form_df[new_col_name]=""
                         st.success(f"Column '{new_col_name}' added.")
+
             elif col_action=="Restore Deleted Column":
                 deleted_cols=[c for c in st.session_state.original_columns if c not in st.session_state.current_form_df.columns]
                 if deleted_cols:
@@ -241,8 +247,8 @@ else:
                 else:
                     st.info("No deleted columns found to restore.")
 
-            # Save Form Changes
-            if st.button("💾 Save Changes to Original Excel File"):
+            save_changes=st.button("💾 Save Changes to Original Excel File")
+            if save_changes:
                 try:
                     with BytesIO() as buffer:
                         st.session_state.current_form_df.to_excel(buffer,index=False)
@@ -253,12 +259,13 @@ else:
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
-            # Validate Member File
+            # Continue workflow
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
                 dropdowns=detect_dropdowns(form_file, list(st.session_state.current_form_df.columns))
                 st.success(f"✅ Form fields detected: {len(st.session_state.current_form_df.columns)}")
+                st.write(st.session_state.current_form_df.columns.tolist())
                 if dropdowns:
                     st.info("Detected dropdowns:")
                     st.table(pd.DataFrame([{"Field":k,"Options":", ".join(v)} for k,v in dropdowns.items()]))
@@ -299,58 +306,38 @@ else:
             st.error(f"❌ Error processing files: {e}")
 
     # ----------------------------
-    # Responses Dashboard (CRUD)
+    # Responses Dashboard
     # ----------------------------
     st.markdown("---")
     st.subheader("📊 Responses Dashboard")
-
-    responses = load_responses()
+    responses=load_responses()
     if responses.empty:
         st.info("No responses submitted yet.")
     else:
-        form_filter = st.selectbox(
-            "Select Form to View Responses:",
-            ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()]
-        )
-
-        if form_filter != "All":
-            form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
-            responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
+        form_filter=st.selectbox("Select Form to View Responses:", ["All"]+[f["form_name"] for f in meta.get("forms",{}).values()])
+        if form_filter!="All":
+            form_id_list=[fid for fid,f in meta["forms"].items() if f["form_name"]==form_filter]
+            responses_display=responses[responses["FormID"]==form_id_list[0]] if form_id_list else pd.DataFrame()
         else:
-            responses_display = responses.copy()
+            responses_display=responses.copy()
 
         if not responses_display.empty:
-            hidden_cols = ["FormID", "FormName", "UserSession", "SubmittedAt"]
-            display_df = responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
-            
-            st.dataframe(display_df, use_container_width=True)
-            
-            # Download responses
-            to_download = BytesIO()
-            display_df.to_excel(to_download, index=False)
-            to_download.seek(0)
-            st.download_button(
-                label="📥 Download Responses",
-                data=to_download,
-                file_name="responses.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-            # Editable Table
-            st.markdown("---")
-            st.subheader("✏️ Edit or Delete Submitted Responses")
-            edited_df = st.data_editor(
+            # Editable and deletable table
+            st.write("### ✏️ Edit Responses")
+            edited_responses = st.data_editor(
                 responses_display,
                 use_container_width=True,
                 num_rows="dynamic",
-                key="editable_responses"
+                key="responses_editor",
             )
-
-            if st.button("💾 Save Changes to Responses"):
-                save_responses(edited_df)
+            # Save edits
+            if st.button("💾 Save Edited Responses"):
+                for idx, row in edited_responses.iterrows():
+                    responses.loc[row.name] = row
+                save_responses(responses)
                 st.success("✅ Responses updated successfully!")
-                st.balloons()
 
+            # Delete single response
             st.markdown("### 🗑️ Delete a Response")
             idx_to_delete = st.number_input(
                 "Select Row Number to Delete:",
@@ -359,7 +346,24 @@ else:
                 step=1
             )
             if st.button("❌ Delete Selected Response"):
-                responses_display = responses_display.drop(responses_display.index[idx_to_delete])
-                save_responses(responses_display)
+                row_index = responses_display.index[idx_to_delete]
+                responses = responses.drop(row_index).reset_index(drop=True)
+                save_responses(responses)
                 st.success("🗑️ Response deleted successfully!")
                 st.experimental_rerun()
+
+            # Hide metadata for display
+            hidden_cols=["FormID","FormName","UserSession","SubmittedAt"]
+            display_df=responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
+            st.dataframe(display_df,use_container_width=True)
+
+            # Download responses
+            to_download=BytesIO()
+            display_df.to_excel(to_download,index=False)
+            to_download.seek(0)
+            st.download_button(
+                label="📥 Download Responses",
+                data=to_download,
+                file_name="responses.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
