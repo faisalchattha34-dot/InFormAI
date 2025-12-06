@@ -123,30 +123,38 @@ if mode=="form":
         session_id = st.session_state["session_id"]
         dropdowns = info.get("dropdowns",{})
         columns = info["columns"]
+        default_values = info.get("default_values",{})
 
         with st.form("user_form", clear_on_submit=False):
             values={}
             for col in columns:
+                prefill = default_values.get(col,"")
                 if col in dropdowns:
-                    values[col]=st.selectbox(col,dropdowns[col], key=f"{col}_{session_id}")
+                    values[col]=st.selectbox(col,dropdowns[col], index=dropdowns[col].index(prefill) if prefill in dropdowns[col] else 0, key=f"{col}_{session_id}")
                 else:
-                    values[col]=st.text_input(col,key=f"{col}_{session_id}")
+                    values[col]=st.text_input(col, value=str(prefill), key=f"{col}_{session_id}")
             submitted=st.form_submit_button("✅ Submit Response")
 
         if submitted:
-            row={
-                "FormID":form_id,
-                "FormName":info["form_name"],
-                "UserSession":session_id,
-                "SubmittedAt":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
+            # Start row with defaults
+            row = {col: default_values.get(col,"") for col in columns}
+            # Update with user input
             row.update(values)
+            # Add metadata
+            row.update({
+                "FormID": form_id,
+                "FormName": info["form_name"],
+                "UserSession": session_id,
+                "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+
             try:
-                responses=load_responses()
+                responses = load_responses()
+                # Make sure all columns exist
                 for col in row.keys():
                     if col not in responses.columns:
                         responses[col]=None
-                responses=pd.concat([responses,pd.DataFrame([row])],ignore_index=True)
+                responses = pd.concat([responses, pd.DataFrame([row])], ignore_index=True)
                 save_responses(responses)
                 st.success("🎉 Response saved successfully!")
                 st.balloons()
@@ -193,6 +201,12 @@ else:
                     cleaned_cols.append(name)
                     prev_name=name
             df_form.columns=cleaned_cols
+
+            # Extract default values from uploaded Excel
+            default_values = {}
+            for col in df_form.columns:
+                if not df_form[col].isnull().all():
+                    default_values[col] = df_form[col].iloc[0]  # first row as default
 
             # Editable preview + recovery
             st.subheader("👀 Edit Form Data (Live Preview)")
@@ -287,6 +301,7 @@ else:
                             "form_name":form_name,
                             "columns":list(st.session_state.current_form_df.columns),
                             "dropdowns":dropdowns,
+                            "default_values":default_values,
                             "created_at":datetime.now().isoformat(),
                         }
                         meta["forms"]=forms
@@ -322,12 +337,10 @@ else:
             responses_display=responses.copy()
 
         if not responses_display.empty:
-            # Hide metadata
             hidden_cols=["FormID","FormName","UserSession","SubmittedAt"]
             display_df=responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
             st.dataframe(display_df,use_container_width=True)
 
-            # Download
             to_download=BytesIO()
             display_df.to_excel(to_download,index=False)
             to_download.seek(0)
@@ -338,10 +351,8 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-            # ------------------- EDIT LAST RESPONSE SECTION -------------------
             st.markdown("---")
             st.subheader("✏️ Edit Submitted Response")
-
             editable = responses.copy()
             st.write("Select response to edit:")
 
@@ -354,9 +365,7 @@ else:
 
             row = editable.iloc[idx]
             new_data = {}
-
             st.write("🔽 Edit values below:")
-
             for col in responses.columns:
                 new_data[col] = st.text_input(col, value=str(row[col]))
 
