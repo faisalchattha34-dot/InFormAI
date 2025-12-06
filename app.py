@@ -17,7 +17,7 @@ st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wi
 st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 
 # ----------------------------
-# CSS (Dark & Light auto support)
+# CSS
 # ----------------------------
 st.markdown("""
 <style>
@@ -56,8 +56,8 @@ def detect_dropdowns(excel_file, df_columns):
     wb = load_workbook(excel_file, data_only=True)
     ws = wb.active
     dropdowns = {}
-    if ws.data_validations:
-        for dv in ws.data_validations.dataValidation:
+    if hasattr(ws, "data_validations"):
+        for dv in getattr(ws.data_validations, "dataValidation", []):
             try:
                 if dv.type=="list" and dv.formula1:
                     formula=str(dv.formula1).strip('"')
@@ -136,11 +136,8 @@ if mode=="form":
             submitted=st.form_submit_button("✅ Submit Response")
 
         if submitted:
-            # Start row with defaults
             row = {col: default_values.get(col,"") for col in columns}
-            # Update with user input
             row.update(values)
-            # Add metadata
             row.update({
                 "FormID": form_id,
                 "FormName": info["form_name"],
@@ -150,7 +147,6 @@ if mode=="form":
 
             try:
                 responses = load_responses()
-                # Make sure all columns exist
                 for col in row.keys():
                     if col not in responses.columns:
                         responses[col]=None
@@ -177,15 +173,16 @@ else:
         try:
             df_members=pd.read_excel(member_file)
 
-            excel_data=pd.read_excel(form_file, header=None)
+            df_form=pd.read_excel(form_file, header=None)
+            # Detect header row
             header_row_index=None
-            for i,row in excel_data.iterrows():
+            for i,row in df_form.iterrows():
                 if row.count()>=len(row)/2:
                     header_row_index=i
                     break
             df_form=pd.read_excel(form_file, header=header_row_index if header_row_index is not None else 0)
 
-            # Clean header names
+            # Clean headers
             cleaned_cols=[]
             seen=set()
             prev_name=None
@@ -202,84 +199,45 @@ else:
                     prev_name=name
             df_form.columns=cleaned_cols
 
-            # Extract default values from uploaded Excel
+            # Default values
             default_values = {}
             for col in df_form.columns:
                 if not df_form[col].isnull().all():
-                    default_values[col] = df_form[col].iloc[0]  # first row as default
+                    default_values[col] = df_form[col].iloc[0]
 
-            # Editable preview + recovery
             st.subheader("👀 Edit Form Data (Live Preview)")
             if "original_columns" not in st.session_state:
                 st.session_state.original_columns=list(df_form.columns)
             if "current_form_df" not in st.session_state:
                 st.session_state.current_form_df=df_form.copy()
 
-            edited_df=st.data_editor(
-                st.session_state.current_form_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                key="form_editor",
-            )
-            st.session_state.current_form_df=edited_df.copy()
+            if st.session_state.current_form_df is not None and not st.session_state.current_form_df.empty:
+                edited_df=st.data_editor(
+                    st.session_state.current_form_df,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    key="form_editor",
+                )
+                st.session_state.current_form_df=edited_df.copy()
 
-            st.write("### ✏️ Column Management")
-            col_action=st.radio("Select Action", ["None","Rename Column","Delete Column","Add Column","Restore Deleted Column"], horizontal=True)
-
-            if col_action=="Rename Column":
-                col_to_rename=st.selectbox("Select column to rename", st.session_state.current_form_df.columns)
-                new_name=st.text_input("Enter new column name:")
-                if st.button("✅ Rename Now"):
-                    st.session_state.current_form_df.rename(columns={col_to_rename:new_name}, inplace=True)
-                    st.success(f"Column renamed from '{col_to_rename}' → '{new_name}'")
-
-            elif col_action=="Delete Column":
-                col_to_delete=st.selectbox("Select column to delete", st.session_state.current_form_df.columns)
-                if st.button("🗑️ Delete Column"):
-                    st.session_state.current_form_df.drop(columns=[col_to_delete], inplace=True)
-                    st.success(f"Column '{col_to_delete}' deleted.")
-
-            elif col_action=="Add Column":
-                new_col_name=st.text_input("Enter new column name:")
-                if st.button("➕ Add Column"):
-                    if new_col_name in st.session_state.current_form_df.columns:
-                        st.warning("Column already exists.")
-                    else:
-                        st.session_state.current_form_df[new_col_name]=""
-                        st.success(f"Column '{new_col_name}' added.")
-
-            elif col_action=="Restore Deleted Column":
-                deleted_cols=[c for c in st.session_state.original_columns if c not in st.session_state.current_form_df.columns]
-                if deleted_cols:
-                    col_to_restore=st.selectbox("Select deleted column to restore", deleted_cols)
-                    if st.button("♻️ Restore Column"):
-                        idx=st.session_state.original_columns.index(col_to_restore)
-                        df=st.session_state.current_form_df
-                        df.insert(loc=idx, column=col_to_restore, value="")
-                        st.session_state.current_form_df=df
-                        st.success(f"Column '{col_to_restore}' restored successfully.")
-                else:
-                    st.info("No deleted columns found to restore.")
-
-            save_changes=st.button("💾 Save Changes to Original Excel File")
-            if save_changes:
+            # Save changes
+            if st.button("💾 Save Changes to Original Excel File"):
                 try:
+                    save_path = os.path.join(DATA_DIR, "saved_form.xlsx")
                     with BytesIO() as buffer:
                         st.session_state.current_form_df.to_excel(buffer,index=False)
                         buffer.seek(0)
-                        with open(form_file.name,"wb") as f:
+                        with open(save_path, "wb") as f:
                             f.write(buffer.read())
-                    st.success("✅ All changes saved back to the uploaded Excel file successfully!")
+                    st.success(f"✅ All changes saved successfully to {save_path}!")
                 except Exception as e:
                     st.error(f"❌ Failed to save: {e}")
 
-            # Continue workflow
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
                 dropdowns=detect_dropdowns(form_file, list(st.session_state.current_form_df.columns))
                 st.success(f"✅ Form fields detected: {len(st.session_state.current_form_df.columns)}")
-                st.write(st.session_state.current_form_df.columns.tolist())
                 if dropdowns:
                     st.info("Detected dropdowns:")
                     st.table(pd.DataFrame([{"Field":k,"Options":", ".join(v)} for k,v in dropdowns.items()]))
@@ -367,7 +325,7 @@ else:
             new_data = {}
             st.write("🔽 Edit values below:")
             for col in responses.columns:
-                new_data[col] = st.text_input(col, value=str(row[col]))
+                new_data[col] = st.text_input(col, value=str(row[col]), key=f"edit_{idx}_{col}")
 
             if st.button("💾 Save Updated Response"):
                 for col in responses.columns:
