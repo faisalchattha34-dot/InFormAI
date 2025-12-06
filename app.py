@@ -1,185 +1,162 @@
 import streamlit as st
 import pandas as pd
+import uuid
 import os
-import json
-from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
 
-# -------------------------------------------------
-# SETUP
-# -------------------------------------------------
-st.set_page_config(page_title="📋 Excel → Form System", layout="wide")
-st.title("📋 Excel → Auto Web Form + Dashboard")
+st.set_page_config(page_title="📄 Editable Form", layout="wide")
+st.title("📄 Editable Form + Edit/Delete + Search + Pagination")
 
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE = "responses.xlsx"
 
-META_FILE = os.path.join(DATA_DIR, "meta.json")
-RESP_FILE = os.path.join(DATA_DIR, "all_responses.xlsx")
+# =====================================
+# LOAD / SAVE
+# =====================================
+def load_data():
+    if os.path.exists(DATA_FILE):
+        return pd.read_excel(DATA_FILE)
+    return pd.DataFrame(columns=["id", "Name", "Email", "City"])
 
-# -------------------------------------------------
-# META HANDLING (FORMS CONFIG)
-# -------------------------------------------------
-def load_meta():
-    if os.path.exists(META_FILE):
-        try:
-            return json.load(open(META_FILE, "r"))
-        except:
-            return {"forms": {}}
-    return {"forms": {}}
+def save_data(df):
+    df.to_excel(DATA_FILE, index=False)
 
-def save_meta(meta):
-    json.dump(meta, open(META_FILE, "w"), indent=4)
+df = load_data()
 
-meta = load_meta()
 
-# -------------------------------------------------
-# RESPONSES EXCEL HANDLER
-# -------------------------------------------------
-def load_responses():
-    if os.path.exists(RESP_FILE):
-        return pd.read_excel(RESP_FILE)
-    return pd.DataFrame()
+# =====================================
+# EMAIL SENDING FUNCTION
+# =====================================
+def send_email(to, subject, body):
+    try:
+        sender_email = st.session_state.get("smtp_user")
+        sender_pass = st.session_state.get("smtp_pass")
 
-def save_responses(df):
-    df.to_excel(RESP_FILE, index=False)
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = sender_email
+        msg["To"] = to
 
-# -------------------------------------------------
-# UPLOAD NEW FORM
-# -------------------------------------------------
-st.sidebar.header("➕ Upload Excel Form")
+        smtp = smtplib.SMTP(st.session_state.get("smtp_server"), st.session_state.get("smtp_port"))
+        smtp.starttls()
+        smtp.login(sender_email, sender_pass)
+        smtp.sendmail(sender_email, to, msg.as_string())
+        smtp.quit()
+        return True
+    except:
+        return False
 
-uploaded = st.sidebar.file_uploader("Upload Excel File:")
-if uploaded:
-    df = pd.read_excel(uploaded)
 
-    form_id = str(len(meta["forms"]) + 1)
-    form_name = uploaded.name
+# =====================================
+# SIDEBAR SETTINGS
+# =====================================
+st.sidebar.header("🔍 Search")
+search_query = st.sidebar.text_input("Search by Name/Email/City")
 
-    dropdowns = {}
-    for col in df.columns:
-        if df[col].dtype == "object":
-            vals = df[col].dropna().unique().tolist()
-            if 1 < len(vals) <= 20:
-                dropdowns[col] = vals
+st.sidebar.header("📨 Email Settings (optional)")
+smtp_enable = st.sidebar.checkbox("Enable Email Send?")
+if smtp_enable:
+    st.session_state.smtp_server = st.sidebar.text_input("SMTP Server", value="smtp.gmail.com")
+    st.session_state.smtp_port = st.sidebar.number_input("Port", value=587)
+    st.session_state.smtp_user = st.sidebar.text_input("Email Address")
+    st.session_state.smtp_pass = st.sidebar.text_input("Password", type="password")
 
-    meta["forms"][form_id] = {
-        "form_name": form_name,
-        "columns": df.columns.tolist(),
-        "dropdowns": dropdowns
-    }
-    save_meta(meta)
-    st.sidebar.success("✅ Form Added Successfully!")
+# =====================================
+# FILTER SEARCH
+# =====================================
+if search_query:
+    df = df[df.apply(lambda row: row.astype(str).str.contains(search_query, case=False).any(), axis=1)]
 
-# -------------------------------------------------
-# USER PANEL (FILL FORM)
-# -------------------------------------------------
-st.header("📝 Fill a Form")
+# =====================================
+# FORM (ADD / EDIT)
+# =====================================
+st.subheader("📝 Fill Form")
 
-if not meta["forms"]:
-    st.info("No forms uploaded yet.")
+edit_id = st.session_state.get("edit_id", None)
+
+if edit_id:
+    rec = df[df["id"] == edit_id].iloc[0]
+    default_name = rec["Name"]
+    default_email = rec["Email"]
+    default_city = rec["City"]
 else:
-    selected_form = st.selectbox(
-        "Select Form to Fill",
-        [f["form_name"] for f in meta["forms"].values()]
-    )
+    default_name = default_email = default_city = ""
 
-    form_id = [fid for fid, f in meta["forms"].items() if f["form_name"] == selected_form][0]
-    form_info = meta["forms"][form_id]
+name = st.text_input("Full Name", default_name)
+email = st.text_input("Email", default_email)
+city = st.text_input("City", default_city)
 
-    with st.form("fill_form"):
-        values = {}
-        for col in form_info["columns"]:
-            if col in form_info["dropdowns"]:
-                values[col] = st.selectbox(col, form_info["dropdowns"][col])
-            else:
-                values[col] = st.text_input(col)
-
-        submit_form = st.form_submit_button("📤 Submit Form")
-
-    if submit_form:
-        df = load_responses()
-        values["FormID"] = form_id
-        values["FormName"] = selected_form
-        values["SubmittedAt"] = datetime.now()
-        df = pd.concat([df, pd.DataFrame([values])], ignore_index=True)
-        save_responses(df)
-        st.success("🎉 Form submitted successfully!")
-
-# -------------------------------------------------
-# ADMIN DASHBOARD
-# -------------------------------------------------
-st.markdown("---")
-st.header("📊 Form Responses Dashboard")
-
-responses = load_responses()
-if responses.empty:
-    st.info("No submissions yet.")
-else:
-    form_filter = st.selectbox(
-        "Filter Responses by Form",
-        ["All"] + [f["form_name"] for f in meta["forms"].values()]
-    )
-
-    if form_filter != "All":
-        form_id_local = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter][0]
-        local_df = responses[responses["FormID"] == form_id_local]
+if st.button("Save"):
+    if edit_id:
+        df.loc[df["id"] == edit_id, ["Name", "Email", "City"]] = [name, email, city]
+        st.session_state.edit_id = None
+        st.success("✔ Updated Successfully!")
+        if smtp_enable:
+            send_email(email, "✔ Record Updated", f"Your information updated successfully.\n\nName: {name}\nCity: {city}")
     else:
-        local_df = responses.copy()
+        new_row = {"id": str(uuid.uuid4()), "Name": name, "Email": email, "City": city}
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        st.success("✔ Added Successfully!")
+        if smtp_enable:
+            send_email(email, "✔ Record Added", f"Thank you for submitting.\n\nName: {name}\nCity: {city}")
 
-    st.dataframe(local_df, use_container_width=True)
+    save_data(df)
+    st.rerun()
 
-    # ------------ EDIT RESPONSE -------------------
-    st.markdown("### ✏️ Edit a Response")
-    if not local_df.empty:
-        idx = st.number_input(
-            "Select row number:",
-            min_value=0,
-            max_value=len(local_df) - 1,
-            step=1
-        )
 
-        edit_button = st.button("✍️ Edit Selected Response")
-        if edit_button:
-            row = local_df.iloc[idx]
-            form = meta["forms"].get(row["FormID"], {})
+# =====================================
+# Download Excel
+# =====================================
+st.subheader("📁 Download")
+st.download_button(
+    label="⬇ Download Excel",
+    data=open(DATA_FILE, "rb").read(),
+    file_name="responses.xlsx",
+    mime="application/vnd.ms-excel"
+)
 
-            st.subheader(f"Editing Response → {form['form_name']} ")
 
-            with st.form("edit_response"):
-                updated = {}
-                for col in form["columns"]:
-                    if col in form['dropdowns']:
-                        opts = form['dropdowns'][col]
-                        updated[col] = st.selectbox(
-                            col, opts,
-                            index=opts.index(row[col]) if row[col] in opts else 0
-                        )
-                    else:
-                        updated[col] = st.text_input(col, value=row[col])
+# =====================================
+# PAGINATION
+# =====================================
+PAGE_SIZE = 5
+total_records = len(df)
+total_pages = max(1, (total_records + PAGE_SIZE - 1) // PAGE_SIZE)
 
-                save_edit = st.form_submit_button("💾 Save Changes")
+if "page" not in st.session_state:
+    st.session_state.page = 1
 
-            if save_edit:
-                rid = row.name
-                for col, val in updated.items():
-                    responses.at[rid, col] = val
-                save_responses(responses)
-                st.success("✅ Response Updated!")
-                st.experimental_rerun()
+# Prev/Next Buttons
+prev_col, mid, next_col = st.columns([1,3,1])
+if prev_col.button("⬅ Previous") and st.session_state.page > 1:
+    st.session_state.page -= 1
+if next_col.button("Next ➡") and st.session_state.page < total_pages:
+    st.session_state.page += 1
 
-    # ------------ DELETE RESPONSE -------------------
-    st.markdown("### 🗑️ Delete a Response")
-    if not local_df.empty:
-        del_idx = st.number_input(
-            "Select row number to delete:",
-            min_value=0,
-            max_value=len(local_df) - 1,
-            step=1
-        )
-        if st.button("❌ Delete Selected Response"):
-            real_index = local_df.index[del_idx]
-            responses = responses.drop(real_index).reset_index(drop=True)
-            save_responses(responses)
-            st.success("🗑️ Deleted Successfully!")
-            st.experimental_rerun()
+start = (st.session_state.page - 1) * PAGE_SIZE
+end = start + PAGE_SIZE
+df_show = df.iloc[start:end]
 
+
+# =====================================
+# DISPLAY DATA
+# =====================================
+st.subheader(f"📋 Records (Page {st.session_state.page}/{total_pages})")
+
+if df_show.empty:
+    st.info("No Records Found")
+else:
+    for index, row in df_show.iterrows():
+        col1, col2, col3 = st.columns([6,1,1])
+        col1.write(f"**{row['Name']}** | {row['Email']} | {row['City']}")
+
+        # Edit Button
+        if col2.button("✏️ Edit", key=f"edit{row['id']}"):
+            st.session_state.edit_id = row["id"]
+            st.rerun()
+
+        # Delete Button
+        if col3.button("🗑 Delete", key=f"delete{row['id']}"):
+            df = df[df["id"] != row["id"]]
+            save_data(df)
+            st.rerun()
