@@ -56,10 +56,8 @@ def detect_dropdowns(excel_file, df_columns):
     wb = load_workbook(excel_file, data_only=True)
     ws = wb.active
     dropdowns = {}
-
     if not ws.data_validations:
         return dropdowns
-
     for dv in ws.data_validations.dataValidation:
         try:
             if dv.type != "list" or not dv.formula1:
@@ -132,10 +130,11 @@ if mode=="form":
         with st.form("user_form", clear_on_submit=False):
             values={}
             for col in columns:
+                key = f"{col}_{session_id}"
                 if col in dropdowns and dropdowns[col]:
-                    values[col]=st.selectbox(col,dropdowns[col], key=f"{col}_{session_id}")
+                    values[col]=st.selectbox(col,dropdowns[col], key=key)
                 else:
-                    values[col]=st.text_input(col,key=f"{col}_{session_id}")
+                    values[col]=st.text_input(col,value="", key=key)
             submitted=st.form_submit_button("✅ Submit Response")
 
         if submitted:
@@ -173,47 +172,24 @@ else:
     if member_file and form_file:
         try:
             df_members=pd.read_excel(member_file)
-
-            excel_data=pd.read_excel(form_file, header=None)
-            header_row_index=None
-            for i,row in excel_data.iterrows():
-                if row.count()>=len(row)/2:
-                    header_row_index=i
-                    break
-            df_form=pd.read_excel(form_file, header=header_row_index if header_row_index is not None else 0)
-
-            # Clean header names
-            cleaned_cols=[]
-            seen=set()
-            prev_name=None
-            for c in df_form.columns:
-                name=str(c).strip() if pd.notna(c) and str(c).strip() else prev_name
-                if name:
-                    name=name.replace("_"," ").title()
-                    if name in seen:
-                        i=2
-                        while f"{name}_{i}" in seen: i+=1
-                        name=f"{name}_{i}"
-                    seen.add(name)
-                    cleaned_cols.append(name)
-                    prev_name=name
-            df_form.columns=cleaned_cols
-
-            # Editable preview
-            st.subheader("👀 Edit Form Data (Live Preview)")
+            df_form=pd.read_excel(form_file)
+            
             if "original_columns" not in st.session_state:
                 st.session_state.original_columns=list(df_form.columns)
             if "current_form_df" not in st.session_state:
                 st.session_state.current_form_df=df_form.copy()
 
+            # Form Editing
+            st.subheader("👀 Edit Form Data (Live Preview)")
             edited_df=st.data_editor(
                 st.session_state.current_form_df,
                 use_container_width=True,
                 num_rows="dynamic",
-                key="form_editor",
+                key="form_editor"
             )
             st.session_state.current_form_df=edited_df.copy()
 
+            # Column Management
             st.write("### ✏️ Column Management")
             col_action=st.radio("Select Action", ["None","Rename Column","Delete Column","Add Column","Restore Deleted Column"], horizontal=True)
 
@@ -252,28 +228,12 @@ else:
                 else:
                     st.info("No deleted columns found to restore.")
 
-            save_changes=st.button("💾 Save Changes to Original Excel File")
-            if save_changes:
-                try:
-                    with BytesIO() as buffer:
-                        st.session_state.current_form_df.to_excel(buffer,index=False)
-                        buffer.seek(0)
-                        with open(form_file.name,"wb") as f:
-                            f.write(buffer.read())
-                    st.success("✅ All changes saved back to the uploaded Excel file successfully!")
-                except Exception as e:
-                    st.error(f"❌ Failed to save: {e}")
-
             # ----------------------------
-            # Continue workflow
+            # Create Form & Send Emails
             # ----------------------------
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
-                dropdowns = detect_dropdowns(form_file, list(st.session_state.current_form_df.columns))
-                if not dropdowns:
-                    st.info("No dropdowns detected. All fields will use text input.")
-
                 form_name=st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 base_url=st.text_input("Your Streamlit App Public URL (example: https://yourapp.streamlit.app)")
                 sender_email=st.text_input("Your Gmail Address:")
@@ -290,7 +250,7 @@ else:
                         forms[form_id_new]={
                             "form_name":form_name,
                             "columns":list(st.session_state.current_form_df.columns),
-                            "dropdowns":dropdowns,
+                            "dropdowns":{},  # optional: implement dropdown detection here
                             "created_at":datetime.now().isoformat(),
                         }
                         meta["forms"]=forms
@@ -316,14 +276,11 @@ else:
     st.subheader("📊 Responses Dashboard")
     responses = load_responses()
 
-    if responses.empty:
-        st.info("No responses submitted yet.")
-    else:
+    if not responses.empty:
         form_filter = st.selectbox(
             "Select Form to View Responses:",
             ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()]
         )
-
         if form_filter != "All":
             form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
             responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
@@ -331,13 +288,12 @@ else:
             responses_display = responses.copy()
 
         if not responses_display.empty:
-            # ---------------- Select Response to Edit ----------------
             st.write("### ✏️ Select a Response to Edit")
             selected_idx = st.selectbox("Select Response by Index", responses_display.index)
             selected_row = responses_display.loc[selected_idx].copy()
 
             st.write("### 📝 Edit Selected Response")
-            with st.form(f"edit_response_{selected_idx}", clear_on_submit=False):
+            with st.form(f"edit_response_{selected_idx}"):
                 response_values = {}
                 for col in [c for c in responses_display.columns if c not in ["FormID","FormName","UserSession","SubmittedAt"]]:
                     response_values[col] = st.text_input(col, value=str(selected_row[col]), key=f"resp_{col}_{selected_idx}")
@@ -348,9 +304,9 @@ else:
                     responses.loc[selected_idx, col] = val
                 save_responses(responses)
                 st.success("✅ Response updated successfully!")
-                st.experimental_rerun()  # Refresh dashboard
+                st.experimental_rerun()  # refresh dashboard safely
 
-            # ---------------- Download All Responses ----------------
+            # Download
             to_download = BytesIO()
             responses.to_excel(to_download, index=False)
             to_download.seek(0)
