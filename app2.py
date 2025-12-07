@@ -331,13 +331,10 @@ else:
             responses_display = responses.copy()
 
         if not responses_display.empty:
-            hidden_cols = ["FormID", "FormName", "UserSession", "SubmittedAt"]
-            display_df = responses_display.drop(columns=[c for c in hidden_cols if c in responses_display.columns])
-
-            # ---------------- Edit/Delete/Add ----------------
+            # ---------------- Edit/Delete/Add Responses ----------------
             st.write("### ✏️ Edit Responses")
             edited_df = st.data_editor(
-                display_df,
+                responses_display,
                 use_container_width=True,
                 num_rows="dynamic",
                 key="responses_editor",
@@ -345,18 +342,11 @@ else:
 
             # Save changes
             if st.button("💾 Save Changes to Responses"):
-                new_df = edited_df.copy()
-                for col in hidden_cols:
-                    if col in responses_display.columns:
-                        if len(responses_display[col]) >= len(new_df):
-                            new_df[col] = responses_display[col].iloc[:len(new_df)].values
-                        else:
-                            new_df[col] = pd.concat([
-                                responses_display[col],
-                                pd.Series([None]*(len(new_df)-len(responses_display[col])))
-                            ]).reset_index(drop=True)
-                save_responses(new_df)
-                st.success("✅ Response data updated successfully!")
+                try:
+                    save_responses(edited_df)
+                    st.success("✅ Response data updated successfully!")
+                except Exception as e:
+                    st.error(f"❌ Failed to save responses: {e}")
 
             # Download Responses
             to_download = BytesIO()
