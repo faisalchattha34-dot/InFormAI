@@ -9,7 +9,6 @@ from io import BytesIO
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import numpy as np
 
 # ----------------------------
 # Setup
@@ -133,9 +132,9 @@ if mode=="form":
             for col in columns:
                 key = f"{col}_{session_id}"
                 if col in dropdowns and dropdowns[col]:
-                    values[col]=st.selectbox(col,dropdowns[col], key=key)
+                    values[col] = st.selectbox(col, dropdowns[col], key=key)
                 else:
-                    values[col]=st.text_input(col,value="", key=key)
+                    values[col] = st.text_input(col,value="", key=key)
             submitted=st.form_submit_button("✅ Submit Response")
 
         if submitted:
@@ -203,9 +202,11 @@ else:
                     prev_name = name
             df_form.columns = cleaned_cols
 
-            # ----------------------------
+            # Detect dropdowns
+            dropdowns = detect_dropdowns(form_file, list(df_form.columns))
+            st.session_state.current_dropdowns = dropdowns
+
             # Store in session
-            # ----------------------------
             if "original_columns" not in st.session_state:
                 st.session_state.original_columns = list(df_form.columns)
             if "current_form_df" not in st.session_state:
@@ -286,7 +287,7 @@ else:
                         forms[form_id_new] = {
                             "form_name": form_name,
                             "columns": list(st.session_state.current_form_df.columns),
-                            "dropdowns": {},  # optional
+                            "dropdowns": st.session_state.current_dropdowns,  # Save detected dropdowns
                             "created_at": datetime.now().isoformat(),
                         }
                         meta["forms"] = forms
@@ -317,6 +318,7 @@ else:
             "Select Form to View Responses:",
             ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()]
         )
+
         if form_filter != "All":
             form_id_list = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
             responses_display = responses[responses["FormID"] == form_id_list[0]] if form_id_list else pd.DataFrame()
@@ -326,23 +328,33 @@ else:
         if not responses_display.empty:
             st.write("### ✏️ Select a Response to Edit")
             selected_idx = st.selectbox("Select Response by Index", responses_display.index)
-            selected_row = responses_display.loc[selected_idx].copy()
+
+            # Session state store for selected row values
+            if "edit_response_values" not in st.session_state or st.session_state.get("edit_response_idx") != selected_idx:
+                st.session_state.edit_response_values = responses_display.loc[selected_idx].to_dict()
+                st.session_state.edit_response_idx = selected_idx
 
             st.write("### 📝 Edit Selected Response")
             with st.form(f"edit_response_{selected_idx}"):
                 response_values = {}
-                for col in [c for c in responses_display.columns if c not in ["FormID","FormName","UserSession","SubmittedAt"]]:
-                    response_values[col] = st.text_input(col, value=str(selected_row[col]), key=f"resp_{col}_{selected_idx}")
+                editable_cols = [c for c in responses_display.columns if c not in ["FormID","FormName","UserSession","SubmittedAt"]]
+                for col in editable_cols:
+                    response_values[col] = st.text_input(col, value=str(st.session_state.edit_response_values[col]), key=f"resp_{col}_{selected_idx}")
                 submitted_edit = st.form_submit_button("💾 Save Response Changes")
 
             if submitted_edit:
                 for col, val in response_values.items():
                     responses.loc[selected_idx, col] = val
                 save_responses(responses)
+                st.session_state.edit_response_values = responses.loc[selected_idx].to_dict()
                 st.success("✅ Response updated successfully!")
-                st.experimental_rerun()  # refresh dashboard
+                st.experimental_rerun()
 
-            # Download
+            # Display updated preview of all filtered responses
+            st.write("### 📋 Current Responses Preview")
+            st.dataframe(responses_display)
+
+            # Download updated responses
             to_download = BytesIO()
             responses.to_excel(to_download, index=False)
             to_download.seek(0)
