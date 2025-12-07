@@ -9,6 +9,7 @@ from io import BytesIO
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import numpy as np
 
 # ----------------------------
 # Setup
@@ -172,26 +173,61 @@ else:
     if member_file and form_file:
         try:
             df_members=pd.read_excel(member_file)
-            df_form=pd.read_excel(form_file)
-            
-            if "original_columns" not in st.session_state:
-                st.session_state.original_columns=list(df_form.columns)
-            if "current_form_df" not in st.session_state:
-                st.session_state.current_form_df=df_form.copy()
 
+            # ----------------------------
+            # Read Form Excel with dynamic header detection
+            # ----------------------------
+            excel_data = pd.read_excel(form_file, header=None)
+            header_row_index = None
+            for i, row in excel_data.iterrows():
+                non_empty_count = row.notna().sum()
+                if non_empty_count >= len(row)/2:  # threshold
+                    header_row_index = i
+                    break
+            df_form = pd.read_excel(form_file, header=header_row_index if header_row_index is not None else 0)
+
+            # Clean headers
+            cleaned_cols = []
+            seen = set()
+            prev_name = None
+            for c in df_form.columns:
+                name = str(c).strip() if pd.notna(c) and str(c).strip() else prev_name
+                if name:
+                    name = name.replace("_", " ").title()
+                    if name in seen:
+                        i = 2
+                        while f"{name}_{i}" in seen: i += 1
+                        name = f"{name}_{i}"
+                    seen.add(name)
+                    cleaned_cols.append(name)
+                    prev_name = name
+            df_form.columns = cleaned_cols
+
+            # ----------------------------
+            # Store in session
+            # ----------------------------
+            if "original_columns" not in st.session_state:
+                st.session_state.original_columns = list(df_form.columns)
+            if "current_form_df" not in st.session_state:
+                st.session_state.current_form_df = df_form.copy()
+
+            # ----------------------------
             # Form Editing
+            # ----------------------------
             st.subheader("👀 Edit Form Data (Live Preview)")
-            edited_df=st.data_editor(
+            edited_df = st.data_editor(
                 st.session_state.current_form_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 key="form_editor"
             )
-            st.session_state.current_form_df=edited_df.copy()
+            st.session_state.current_form_df = edited_df.copy()
 
+            # ----------------------------
             # Column Management
+            # ----------------------------
             st.write("### ✏️ Column Management")
-            col_action=st.radio("Select Action", ["None","Rename Column","Delete Column","Add Column","Restore Deleted Column"], horizontal=True)
+            col_action = st.radio("Select Action", ["None","Rename Column","Delete Column","Add Column","Restore Deleted Column"], horizontal=True)
 
             if col_action=="Rename Column":
                 col_to_rename=st.selectbox("Select column to rename", st.session_state.current_form_df.columns)
@@ -234,10 +270,10 @@ else:
             if "Email" not in df_members.columns:
                 st.error("❌ Member file must contain an 'Email' column.")
             else:
-                form_name=st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                base_url=st.text_input("Your Streamlit App Public URL (example: https://yourapp.streamlit.app)")
-                sender_email=st.text_input("Your Gmail Address:")
-                password=st.text_input("Your Gmail App Password:", type="password")
+                form_name = st.text_input("Form Name:", value=f"My Form {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                base_url = st.text_input("Your Streamlit App Public URL (example: https://yourapp.streamlit.app)")
+                sender_email = st.text_input("Your Gmail Address:")
+                password = st.text_input("Your Gmail App Password:", type="password")
 
                 if st.button("🚀 Create Form & Send Emails"):
                     if not base_url:
@@ -245,23 +281,23 @@ else:
                     elif not sender_email or not password:
                         st.error("Please enter Gmail and App Password.")
                     else:
-                        form_id_new=str(uuid.uuid4())[:10]
-                        forms=meta.get("forms",{})
-                        forms[form_id_new]={
-                            "form_name":form_name,
-                            "columns":list(st.session_state.current_form_df.columns),
-                            "dropdowns":{},  # optional: implement dropdown detection here
-                            "created_at":datetime.now().isoformat(),
+                        form_id_new = str(uuid.uuid4())[:10]
+                        forms = meta.get("forms", {})
+                        forms[form_id_new] = {
+                            "form_name": form_name,
+                            "columns": list(st.session_state.current_form_df.columns),
+                            "dropdowns": {},  # optional
+                            "created_at": datetime.now().isoformat(),
                         }
-                        meta["forms"]=forms
+                        meta["forms"] = forms
                         save_meta(meta)
-                        link=f"{base_url.rstrip('/')}/?mode=form&form_id={form_id_new}"
+                        link = f"{base_url.rstrip('/')}/?mode=form&form_id={form_id_new}"
                         st.success(f"✅ Form created successfully!\n{link}")
                         st.info("📧 Sending form link to all members...")
-                        emails=df_members["Email"].dropna().unique().tolist()
-                        subject=f"Form Invitation: {form_name}"
-                        message=f"Hello,\n\nPlease fill out the form below:\n{link}\n\nThank you!"
-                        sent_count,send_results=send_email_to_members(sender_email,password,emails,subject,message)
+                        emails = df_members["Email"].dropna().unique().tolist()
+                        subject = f"Form Invitation: {form_name}"
+                        message = f"Hello,\n\nPlease fill out the form below:\n{link}\n\nThank you!"
+                        sent_count,send_results = send_email_to_members(sender_email,password,emails,subject,message)
                         st.success(f"🎉 Emails sent: {sent_count}/{len(emails)}")
                         st.subheader("📧 Email Send Status")
                         st.table(pd.DataFrame(send_results))
@@ -304,7 +340,7 @@ else:
                     responses.loc[selected_idx, col] = val
                 save_responses(responses)
                 st.success("✅ Response updated successfully!")
-                st.experimental_rerun()  # refresh dashboard safely
+                st.experimental_rerun()  # refresh dashboard
 
             # Download
             to_download = BytesIO()
