@@ -17,13 +17,13 @@ st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wi
 st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 
 # ----------------------------
-# CSS
+# CSS (UI Improve)
 # ----------------------------
 st.markdown("""
 <style>
 :root { color-scheme: light dark; }
-body { font-family: 'Arial'; }
-.stButton>button { background:#3498db;color:white;border-radius:8px; }
+.stButton>button { background-color:#3498db;color:white;padding:10px 18px;border:none;border-radius:6px; }
+.stButton>button:hover { background-color:#2980b9; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -33,129 +33,205 @@ body { font-family: 'Arial'; }
 DATA_DIR = "data_store"
 os.makedirs(DATA_DIR, exist_ok=True)
 META_PATH = os.path.join(DATA_DIR, "meta.json")
-RESP_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
+ALL_RESPONSES_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
 
+# ----------------------------
+# Meta Functions
 # ----------------------------
 def load_meta():
-    return json.load(open(META_PATH, "r")) if os.path.exists(META_PATH) else {}
+    if os.path.exists(META_PATH):
+        with open(META_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
 def save_meta(meta):
-    json.dump(meta, open(META_PATH, "w"), indent=2)
-
-def load_responses():
-    return pd.read_excel(RESP_PATH) if os.path.exists(RESP_PATH) else pd.DataFrame()
-
-def save_responses(df):
-    df.to_excel(RESP_PATH, index=False)
+    with open(META_PATH, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
 # ----------------------------
-# AUTO DROPDOWN DETECTION FROM DATA
+# FIXED DROPDOWN FUNCTION
 # ----------------------------
-def detect_dropdowns_from_data(df):
+def detect_dropdowns(excel_file, df_columns):
+    excel_file.seek(0)
+    wb = load_workbook(excel_file, data_only=True)
+    ws = wb.active
     dropdowns = {}
-    for col in df.columns:
-        unique_vals = df[col].dropna().unique().tolist()
-        if 1 < len(unique_vals) <= 50:
-            dropdowns[col] = unique_vals
+
+    if not ws.data_validations:
+        return dropdowns
+
+    for dv in ws.data_validations.dataValidation:
+        try:
+            if dv.type != "list" or not dv.formula1:
+                continue
+
+            formula = str(dv.formula1).strip()
+
+            # Inline Values e.g "Male,Female"
+            if "," in formula:
+                options = [x.strip().strip('"') for x in formula.strip('"').split(",")]
+
+            # Range e.g =Sheet1!$B$3:$B$10
+            else:
+                try:
+                    ref = formula.replace("=", "").replace("$", "")
+                    sheet_name, cells = ref.split("!")
+                    col_range = cells.split(":")
+
+                    ws2 = wb[sheet_name]
+                    start = col_range[0]
+                    end = col_range[-1]
+                    options = []
+
+                    for row in ws2[start:end]:
+                        for cell in row:
+                            if cell.value not in [None, ""]:
+                                options.append(str(cell.value))
+                except:
+                    continue
+
+            # Assign dropdown to field column
+            for cell_range in dv.cells:
+                col_index = cell_range.min_col - 1
+                if 0 <= col_index < len(df_columns):
+                    dropdowns[df_columns[col_index]] = sorted(list(set(options)))
+
+        except:
+            continue
+
     return dropdowns
 
 # ----------------------------
-# URL Params
+# Send Email
 # ----------------------------
-params = st.experimental_get_query_params()
-mode = params.get("mode", ["admin"])[0]
-form_id = params.get("form_id", [None])[0]
-meta = load_meta()
+def send_email_to_members(sender_email,password,members,subject,message):
+    sent=0
+    out=[]
+    for email in members:
+        try:
+            msg=MIMEMultipart()
+            msg["From"]=sender_email
+            msg["To"]=email
+            msg["Subject"]=subject
+            msg.attach(MIMEText(message,"plain"))
+            with smtplib.SMTP("smtp.gmail.com",587) as server:
+                server.starttls()
+                server.login(sender_email,password)
+                server.send_message(msg)
+            sent+=1
+            out.append({"Email":email,"Status":"Sent"})
+        except:
+            out.append({"Email":email,"Status":"Failed"})
+    return sent,out
 
 # ----------------------------
-# USER FORM MODE
+# Responses Save/Load
 # ----------------------------
-if mode == "form":
+def load_responses():
+    if os.path.exists(ALL_RESPONSES_PATH):
+        return pd.read_excel(ALL_RESPONSES_PATH)
+    return pd.DataFrame()
+
+def save_responses(df):
+    df.to_excel(ALL_RESPONSES_PATH,index=False)
+
+# ----------------------------
+# URL Modes
+# ----------------------------
+params = st.experimental_get_query_params()
+mode = params.get("mode",["admin"])[0]
+form_id = params.get("form_id",[None])[0]
+meta = load_meta()
+
+# ===================================================================
+#                        FORM PAGE
+# ===================================================================
+if mode=="form":
     if not form_id or "forms" not in meta or form_id not in meta["forms"]:
-        st.error("Invalid Form Link!")
+        st.warning("Invalid Form Link.")
     else:
         info = meta["forms"][form_id]
         st.header(f"📝 {info['form_name']}")
-        dropdowns = info.get("dropdowns", {})
-        columns = info["columns"]
 
-        with st.form("user_submit"):
-            values = {}
+        if "session_id" not in st.session_state:
+            st.session_state["session_id"]=str(uuid.uuid4())[:8]
+        sid=st.session_state["session_id"]
+
+        dropdowns = info.get("dropdowns",{})
+        columns=info["columns"]
+
+        with st.form("user_form"):
+            values={}
             for col in columns:
                 if col in dropdowns:
-                    options = dropdowns[col] + ["✏ Enter custom value"]
-                    selected = st.selectbox(col, options)
-                    if selected == "✏ Enter custom value":
-                        values[col] = st.text_input(f"Enter new value for '{col}'")
-                    else:
-                        values[col] = selected
+                    values[col]=st.selectbox(col,dropdowns[col])
                 else:
-                    values[col] = st.text_input(col)
+                    values[col]=st.text_input(col)
+            submitted=st.form_submit_button("Submit")
 
-            submit = st.form_submit_button("Submit Response")
-
-        if submit:
-            row = {"FormID": form_id, "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        if submitted:
+            row={
+                "FormID":form_id,
+                "SubmittedAt":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
             row.update(values)
-            res = load_responses()
-            for c in row:
-                if c not in res.columns: res[c] = None
-            res = pd.concat([res, pd.DataFrame([row])], ignore_index=True)
-            save_responses(res)
-            st.success("Response Saved Successfully 🎉")
+            responses=load_responses()
+            for c in row.keys():
+                if c not in responses.columns:
+                    responses[c]=None
+            responses=pd.concat([responses,pd.DataFrame([row])],ignore_index=True)
+            save_responses(responses)
+            st.success("✔ Response Saved")
+            st.balloons()
 
-# ----------------------------
-# ADMIN PANEL
-# ----------------------------
+# ===================================================================
+#                        ADMIN PAGE
+# ===================================================================
 else:
     st.header("🧑‍💼 Admin Panel")
 
-    col1, col2 = st.columns(2)
+    col1,col2 = st.columns(2)
     with col1:
-        member_file = st.file_uploader("Upload Members File (Must have Email)", type=["xlsx"])
+        member_file=st.file_uploader("Member List (Email required)", type=["xlsx"])
     with col2:
-        form_file = st.file_uploader("Upload Source Excel", type=["xlsx"])
+        form_file=st.file_uploader("Form Source", type=["xlsx"])
 
     if member_file and form_file:
-        members = pd.read_excel(member_file)
-        df_form = pd.read_excel(form_file)
+        df_members=pd.read_excel(member_file)
+        df_form=pd.read_excel(form_file)
 
-        st.subheader("Editable Sheet Preview")
-        if "current" not in st.session_state:
-            st.session_state.current = df_form.copy()
+        st.subheader("Edit Form Columns")
+        edited=st.data_editor(df_form, num_rows="dynamic", key="edit")
+        dropdowns=detect_dropdowns(form_file, list(edited.columns))
 
-        edited = st.data_editor(st.session_state.current, num_rows="dynamic")
-        st.session_state.current = edited
+        st.write("Dropdowns Found:")
+        st.write(dropdowns)
 
-        dropdowns = detect_dropdowns_from_data(st.session_state.current)
-
-        st.write("Detected Dropdown Fields:")
-        if dropdowns:
-            st.table(pd.DataFrame([{"Field": k, "Options": ",".join(v)} for k,v in dropdowns.items()]))
-        else:
-            st.info("No dropdowns detected.")
-
-        form_name = st.text_input("Form Name", value="Generated Form")
-        app_url = st.text_input("App Public URL (Example: https://myapp.streamlit.app)")
-        sender = st.text_input("Gmail Sender")
-        password = st.text_input("Gmail App Password", type="password")
+        form_name=st.text_input("Form Name")
+        base_url=st.text_input("Streamlit Public URL")
+        sender_email=st.text_input("Email")
+        password=st.text_input("App Password", type="password")
 
         if st.button("Create Form & Send Emails"):
-            fid = str(uuid.uuid4())[:10]
-            meta.setdefault("forms", {})
-            meta["forms"][fid] = {"form_name": form_name, "columns": list(st.session_state.current.columns),
-                                  "dropdowns": dropdowns}
+            new_id=str(uuid.uuid4())[:10]
+            meta.setdefault("forms",{})[new_id]={
+                "form_name":form_name,
+                "columns":list(edited.columns),
+                "dropdowns":dropdowns,
+            }
             save_meta(meta)
+            link=f"{base_url}/?mode=form&form_id={new_id}"
 
-            link = f"{app_url}/?mode=form&form_id={fid}"
-            st.success(f"Form Created Successfully\n{link}")
+            emails=df_members["Email"].dropna().unique().tolist()
+            subject="Please fill this form"
+            msg=f"Open form: {link}"
 
-# ----------------------------
-# RESPONSE DASHBOARD
-# ----------------------------
-    st.subheader("📊 Responses")
-    res = load_responses()
-    if res.empty:
-        st.info("No responses yet.")
-    else:
-        st.dataframe(res)
+            sent,out=send_email_to_members(sender_email,password,emails,subject,msg)
+            st.write(f"Sent {sent}/{len(emails)}")
+            st.table(pd.DataFrame(out))
+
+    # -----------------------
+    st.subheader("Responses")
+    resp=load_responses()
+    if not resp.empty:
+        st.dataframe(resp,use_container_width=True)
