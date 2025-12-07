@@ -340,13 +340,14 @@ else:
                 st.session_state.edit_response_values = responses.loc[selected_idx].to_dict()
                 st.success("✅ Response updated successfully!")
 
-            # Display updated preview
+            # Display updated preview with all columns
             st.write("### 📋 Current Responses Preview")
             st.dataframe(responses_display)
 
-            # Download updated responses
+            # Download user-only columns (exclude system columns)
             to_download = BytesIO()
-            responses.to_excel(to_download, index=False)
+            user_columns = [c for c in responses.columns if c not in ["FormID","FormName","UserSession","SubmittedAt"]]
+            responses[user_columns].to_excel(to_download, index=False)
             to_download.seek(0)
             st.download_button(
                 label="📥 Download All Responses",
