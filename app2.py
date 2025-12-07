@@ -331,29 +331,31 @@ else:
             responses_display = responses.copy()
 
         if not responses_display.empty:
-            # ---------------- Edit/Delete/Add Responses ----------------
-            st.write("### ✏️ Edit Responses")
-            edited_df = st.data_editor(
-                responses_display,
-                use_container_width=True,
-                num_rows="dynamic",
-                key="responses_editor",
-            )
+            # ---------------- Select Response to Edit ----------------
+            st.write("### ✏️ Select a Response to Edit")
+            selected_idx = st.selectbox("Select Response by Index", responses_display.index)
+            selected_row = responses_display.loc[selected_idx].copy()
 
-            # Save changes
-            if st.button("💾 Save Changes to Responses"):
-                try:
-                    save_responses(edited_df)
-                    st.success("✅ Response data updated successfully!")
-                except Exception as e:
-                    st.error(f"❌ Failed to save responses: {e}")
+            st.write("### 📝 Edit Selected Response")
+            with st.form(f"edit_response_{selected_idx}", clear_on_submit=False):
+                response_values = {}
+                for col in [c for c in responses_display.columns if c not in ["FormID","FormName","UserSession","SubmittedAt"]]:
+                    response_values[col] = st.text_input(col, value=str(selected_row[col]), key=f"resp_{col}_{selected_idx}")
+                submitted_edit = st.form_submit_button("💾 Save Response Changes")
 
-            # Download Responses
+            if submitted_edit:
+                for col, val in response_values.items():
+                    responses.loc[selected_idx, col] = val
+                save_responses(responses)
+                st.success("✅ Response updated successfully!")
+                st.experimental_rerun()  # Refresh dashboard
+
+            # ---------------- Download All Responses ----------------
             to_download = BytesIO()
-            edited_df.to_excel(to_download, index=False)
+            responses.to_excel(to_download, index=False)
             to_download.seek(0)
             st.download_button(
-                label="📥 Download Responses",
+                label="📥 Download All Responses",
                 data=to_download,
                 file_name="responses.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
