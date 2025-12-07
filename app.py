@@ -5,506 +5,465 @@ import os
 import json
 import uuid
 from datetime import datetime
-from openpyxl import load_workbook
 from io import BytesIO
+from pathlib import Path
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import urllib.parse
 
 # ----------------------------
-# Basic setup
+# Configuration / Storage
 # ----------------------------
-st.set_page_config(page_title="📄 Excel→Form + Auto Email + Edit", layout="wide")
-st.title("📄 Excel → Auto Form Builder + Auto Email + Edit")
-
-DATA_DIR = "data_store"
-FORMS_DIR = os.path.join(DATA_DIR, "forms")
-RESP_DIR = os.path.join(DATA_DIR, "responses")
-LINKS_FILE = os.path.join(DATA_DIR, "links.json")
-os.makedirs(FORMS_DIR, exist_ok=True)
-os.makedirs(RESP_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# load or init links mapping
-if os.path.exists(LINKS_FILE):
-    with open(LINKS_FILE, "r") as f:
-        LINKS = json.load(f)
-else:
-    LINKS = {}
-    with open(LINKS_FILE, "w") as f:
-        json.dump(LINKS, f, indent=2)
+st.set_page_config(page_title="Excel → Dynamic Form System", layout="wide")
+BASE = Path("data_store")
+TEMPLATES_DIR = BASE / "templates"
+MEMBERS_DIR = BASE / "members"
+RESPONSES_DIR = BASE / "responses"
+SENT_EMAILS_LOG = BASE / "sent_emails.json"
+for d in (TEMPLATES_DIR, MEMBERS_DIR, RESPONSES_DIR):
+    d.mkdir(parents=True, exist_ok=True)
 
 # ----------------------------
 # Helpers
 # ----------------------------
-def read_excel_all_sheets(uploaded_file):
-    wb = load_workbook(uploaded_file)
-    sheets = {}
-    for s in wb.sheetnames:
-        sheets[s] = pd.read_excel(uploaded_file, sheet_name=s)
-    return sheets
+def save_json(path: Path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
 
-def parse_template_from_df(df_sheets):
-    """
-    Determine columns and dropdown options.
-    Approach:
-    - If any header contains "ColName:opt1,opt2", parse that.
-    - If there is a sheet called 'Dropdowns' or 'Options', read mappings:
-        first column = field name, second column = comma-separated options OR multiple rows per field
-    - Otherwise, columns = df.columns of first (or chosen) sheet
-    Return: list of fields as dicts: [{"name": "...", "type": "text"|"select", "options": [...]}]
-    """
-    # prefer sheet named 'Template' or first non-empty sheet
-    preferred = None
-    for name in ["Template", "Form", "Sheet1"]:
-        if name in df_sheets:
-            preferred = name
-            break
-    if not preferred:
-        # choose first sheet with tabular columns
-        preferred = list(df_sheets.keys())[0]
+def load_json(path: Path):
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    df = df_sheets[preferred]
-    cols = list(df.columns)
+def send_email(smtp_server, smtp_port, sender_email, sender_pass, receiver_email, subject, body):
+    msg = MIMEMultipart()
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
 
-    # parse headers for inline options
-    fields = []
-    dropdown_map = {}
-
-    # look for a special sheet for dropdowns
-    for key in ["Dropdowns", "Options", "Dropdown", "Choices"]:
-        if key in df_sheets:
-            dd_df = df_sheets[key]
-            # assume two-column mapping: field | options (comma-separated) OR multiple rows with same field
-            for _, row in dd_df.iterrows():
-                if len(row) >= 2 and pd.notna(row.iloc[0]):
-                    field_name = str(row.iloc[0]).strip()
-                    # options can be in subsequent columns or second column
-                    opts = []
-                    # collect non-empty values in the row after first column
-                    for val in row.iloc[1:]:
-                        if pd.notna(val):
-                            opts.append(str(val).strip())
-                    # if second column is comma-separated
-                    if len(opts) == 1 and "," in opts[0]:
-                        opts = [o.strip() for o in opts[0].split(",") if o.strip()]
-                    if opts:
-                        dropdown_map[field_name] = opts
-            break
-
-    for c in cols:
-        name = str(c).strip()
-        # inline format: "Gender:Male,Female"
-        if ":" in name:
-            parts = name.split(":", 1)
-            fld = parts[0].strip()
-            opts = [o.strip() for o in parts[1].split(",") if o.strip()]
-            fields.append({"name": fld, "type": "select" if opts else "text", "options": opts})
-        elif name in dropdown_map:
-            fields.append({"name": name, "type": "select", "options": dropdown_map[name]})
-        else:
-            fields.append({"name": name, "type": "text", "options": []})
-
-    return fields
-
-def save_form_definition(form_id, form_def):
-    path = os.path.join(FORMS_DIR, f"{form_id}.json")
-    with open(path, "w") as f:
-        json.dump(form_def, f, indent=2)
-
-def load_form_definition(form_id):
-    path = os.path.join(FORMS_DIR, f"{form_id}.json")
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return json.load(f)
-    return None
-
-def save_response(form_id, resp_id, data):
-    path = os.path.join(RESP_DIR, f"{form_id}__{resp_id}.json")
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-
-def load_responses_for_form(form_id):
-    res = []
-    for fname in os.listdir(RESP_DIR):
-        if fname.startswith(form_id + "__") and fname.endswith(".json"):
-            with open(os.path.join(RESP_DIR, fname), "r") as f:
-                res.append(json.load(f))
-    return res
-
-def generate_token():
-    return uuid.uuid4().hex
-
-def persist_links():
-    with open(LINKS_FILE, "w") as f:
-        json.dump(LINKS, f, indent=2)
-
-def send_email_smtp(sender_email, sender_pass, receiver, subject, body, smtp_server="smtp.gmail.com", smtp_port=587):
     try:
-        msg = MIMEMultipart()
-        msg["From"] = sender_email
-        msg["To"] = receiver
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-
-        server = smtplib.SMTP(smtp_server, smtp_port)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=20)
         server.starttls()
         server.login(sender_email, sender_pass)
-        server.sendmail(sender_email, receiver, msg.as_string())
+        server.sendmail(sender_email, receiver_email, msg.as_string())
         server.quit()
-        return True, "Sent"
+        return True, None
     except Exception as e:
         return False, str(e)
 
+def detect_template_from_file(uploaded_file):
+    """
+    Accepts an uploaded file (BytesIO or UploadedFile) and returns:
+    - columns: list of column names
+    - dropdowns: dict field -> [options] (detected)
+    Detection strategies:
+      1) If there's a sheet named 'Dropdowns' with two columns: Field, Options (comma-separated)
+      2) If any header cell contains 'Field: a,b,c' (inline) -> parse
+      3) Otherwise treat headers as simple text fields
+    """
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception:
+        # try csv
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file)
+        return list(df.columns), {}
+    dropdowns = {}
+    columns = []
+
+    # strategy 1: look for "Dropdowns" sheet
+    if "Dropdowns" in xls.sheet_names:
+        df_dd = pd.read_excel(uploaded_file, sheet_name="Dropdowns", engine="openpyxl")
+        # Expect columns: Field, Options
+        for _, row in df_dd.iterrows():
+            if pd.isna(row.iloc[0]): 
+                continue
+            field = str(row.iloc[0]).strip()
+            opts = str(row.iloc[1]) if len(row) > 1 else ""
+            opt_list = [o.strip() for o in str(opts).split(",") if o.strip()]
+            if opt_list:
+                dropdowns[field] = opt_list
+
+    # primary sheet for columns: pick first sheet that's not 'Dropdowns'
+    main_sheet_name = next((s for s in xls.sheet_names if s != "Dropdowns"), xls.sheet_names[0])
+    df_main = pd.read_excel(uploaded_file, sheet_name=main_sheet_name, engine="openpyxl")
+
+    # strategy 2: headers may contain inline options like "Gender: Male,Female"
+    for raw_col in df_main.columns:
+        raw = str(raw_col)
+        if ":" in raw and "," in raw:
+            # inline dropdown
+            name, opts = raw.split(":", 1)
+            name = name.strip()
+            opt_list = [o.strip() for o in opts.split(",") if o.strip()]
+            dropdowns[name] = opt_list
+            columns.append(name)
+        else:
+            columns.append(raw.strip())
+
+    # strategy 3: if some columns have few unique values -> treat as dropdown heuristically
+    # only if dropdowns not already provided for that column
+    for col in columns:
+        if col in dropdowns:
+            continue
+        if col in df_main.columns:
+            vals = df_main[col].dropna().astype(str).unique()
+            if 1 < len(vals) <= 20:
+                # treat as dropdown candidate but only if values are short and repeated
+                dropdowns[col] = list(vals)
+
+    return columns, dropdowns
+
+def create_member_links(form_id, members_df, form_base_url, expire_days=365):
+    """
+    For each member, create a unique token and link.
+    Return list of dicts: {name,email,token,link}
+    """
+    out = []
+    for _, row in members_df.iterrows():
+        name = str(row.get("Name") or row.get("name") or "").strip()
+        email = str(row.get("Email") or row.get("email") or "").strip()
+        if not email:
+            continue
+        token = uuid.uuid4().hex
+        params = {"form_id": form_id, "email": email, "token": token}
+        link = f"{form_base_url}?{urllib.parse.urlencode(params)}"
+        out.append({"name": name, "email": email, "token": token, "link": link})
+    return out
+
+def get_request_params():
+    query = st.experimental_get_query_params()
+    form_id = query.get("form_id", [None])[0]
+    email = query.get("email", [None])[0]
+    token = query.get("token", [None])[0]
+    return form_id, email, token
+
 # ----------------------------
-# Sidebar - Email / App config
+# Sidebar - Email credentials & Mode
 # ----------------------------
-st.sidebar.header("🔧 App & Email Settings")
-st.sidebar.markdown("Enter base URL of this app (used to build shareable links). Example: `https://share.streamlit.io/yourname/yourapp`")
-APP_BASE_URL = st.sidebar.text_input("App Base URL (required to email links)", value="", help="Enter full base URL without trailing slash")
-SENDER_EMAIL = st.sidebar.text_input("Sender Email (for SMTP)")
-SENDER_PASS = st.sidebar.text_input("Sender App Password (for SMTP)", type="password")
+st.sidebar.header("🔧 Settings")
+st.sidebar.info("Provide sender email (Gmail recommended) and app password to enable sending links & notifications.")
+smtp_server = st.sidebar.text_input("SMTP Server", value="smtp.gmail.com")
+smtp_port = st.sidebar.number_input("SMTP Port", value=587)
+sender_email = st.sidebar.text_input("Sender Email (from)")
+sender_pass = st.sidebar.text_input("Sender App Password", type="password")
+base_url = st.sidebar.text_input("Base Form URL (app URL where members will open form)", value="http://localhost:8501")
 st.sidebar.markdown("---")
-st.sidebar.markdown("Tips:\n- To test without sending real emails, leave sender credentials empty and you'll get links displayed instead of emailed.\n- Dropdowns can be placed as `ColumnName:opt1,opt2` in header or in a separate sheet named 'Dropdowns' or 'Options'.")
+st.sidebar.header("System Info")
+st.sidebar.write(f"Storage: `{BASE.resolve()}`")
 
 # ----------------------------
-# Main Tabs
+# Main UI Tabs
 # ----------------------------
-tabs = st.tabs(["1. Create Form", "2. Form Link (open/edit)", "3. Dashboard / Responses"])
+tabs = st.tabs(["Create Form & Send Links", "Open Form / Fill", "Dashboard / Responses"])
+tab_create, tab_fill, tab_dash = tabs
 
 # ----------------------------
-# TAB 1: Create Form
+# Tab 1: Create Template, upload members, configure and send links
 # ----------------------------
-with tabs[0]:
-    st.header("1️⃣ Create Form from Excel files")
-
+with tab_create:
+    st.header("1) Upload Template & Members → Build Form")
     col1, col2 = st.columns(2)
+
     with col1:
-        st.subheader("Upload Members Excel (Name, Email)")
-        members_file = st.file_uploader("Upload Members file (.xlsx or .csv)", type=["xlsx", "csv"], key="members_upload")
-    with col2:
-        st.subheader("Upload Template Excel (columns / dropdowns)")
-        template_file = st.file_uploader("Upload Template file (.xlsx or .csv)", type=["xlsx", "csv"], key="template_upload")
-
-    if members_file and template_file:
-        # read members
-        try:
-            if members_file.name.endswith(".csv"):
-                df_members = pd.read_csv(members_file)
-            else:
-                df_members = pd.read_excel(members_file)
-            # normalize columns: try to find 'name' and 'email'
-            cols_lower = [c.lower() for c in df_members.columns]
-            name_col = None
-            email_col = None
-            for c in df_members.columns:
-                lc = c.lower()
-                if "name" in lc and name_col is None:
-                    name_col = c
-                if "email" in lc and email_col is None:
-                    email_col = c
-            if name_col is None or email_col is None:
-                st.error("Couldn't detect 'Name' and 'Email' columns in members file. Make sure columns contain 'name' and 'email' in their header.")
-            else:
-                st.success(f"Detected members: {len(df_members)} rows. Using Name column `{name_col}` and Email column `{email_col}`")
-                # read template
-                if template_file.name.endswith(".csv"):
-                    df_template = pd.read_csv(template_file)
-                    df_sheets = {"Template": df_template}
+        st.subheader("Upload Members File (xlsx or csv)")
+        members_file = st.file_uploader("Members File (must contain Name & Email columns)", type=["xlsx", "csv"], key="members_upload")
+        members_df = None
+        if members_file:
+            try:
+                if members_file.type.endswith("csv") or members_file.name.lower().endswith(".csv"):
+                    members_df = pd.read_csv(members_file)
                 else:
-                    df_sheets = read_excel_all_sheets(template_file)
-                fields = parse_template_from_df(df_sheets)
+                    members_df = pd.read_excel(members_file, engine="openpyxl")
+                st.success("Members loaded")
+                st.dataframe(members_df.head(50))
+            except Exception as e:
+                st.error(f"Error reading members file: {e}")
 
-                st.subheader("Detected Fields")
-                st.write("You can edit fields (add / remove / reorder) before creating the form.")
-                # store a working copy in session_state
-                if "working_fields" not in st.session_state:
-                    st.session_state.working_fields = fields.copy()
-                    st.session_state.removed_fields = []
+    with col2:
+        st.subheader("Upload Template File (form columns + dropdowns)")
+        template_file = st.file_uploader("Template File (xlsx)", type=["xlsx"], key="template_upload")
+        detected_columns, detected_dropdowns = None, {}
+        if template_file:
+            try:
+                detected_columns, detected_dropdowns = detect_template_from_file(template_file)
+                st.success("Template detected")
+                st.markdown("**Detected columns:**")
+                st.write(detected_columns)
+                if detected_dropdowns:
+                    st.markdown("**Detected dropdowns:**")
+                    st.json(detected_dropdowns)
+            except Exception as e:
+                st.error(f"Error reading template file: {e}")
 
-                # Show editable list
-                for idx, f in enumerate(st.session_state.working_fields):
-                    cols_f = st.columns([4, 1, 1, 1])
-                    with cols_f[0]:
-                        new_name = st.text_input(f"Field {idx+1} name", value=f["name"], key=f"fname_{idx}")
-                    with cols_f[1]:
-                        field_type = st.selectbox("Type", options=["text", "select"], index=0 if f["type"]=="text" else 1, key=f"ftype_{idx}")
-                    with cols_f[2]:
-                        opts_val = ""
-                        if field_type == "select":
-                            opts_val = st.text_input("Options (comma separated)", value=",".join(f.get("options", [])), key=f"fopts_{idx}")
-                        else:
-                            # empty placeholder
-                            st.write("")
-                    with cols_f[3]:
-                        if st.button("Remove", key=f"remove_{idx}"):
-                            st.session_state.removed_fields.append(st.session_state.working_fields.pop(idx))
-                            st.experimental_rerun()
-                    # update back
-                    st.session_state.working_fields[idx]["name"] = new_name
-                    st.session_state.working_fields[idx]["type"] = field_type
-                    if field_type == "select":
-                        st.session_state.working_fields[idx]["options"] = [o.strip() for o in opts_val.split(",") if o.strip()]
-                    else:
-                        st.session_state.working_fields[idx]["options"] = []
+    st.markdown("---")
+    st.subheader("Form Configuration")
+    form_title = st.text_input("Form Title", value="Dynamic Form")
+    description = st.text_area("Form description (shown to respondents)", value="Please fill this form.")
+    # Build an editable columns config
+    config_cols = []
+    if detected_columns:
+        # initialize session state config if not present
+        if "form_config_tmp" not in st.session_state:
+            cfg = []
+            for c in detected_columns:
+                cfg.append({
+                    "name": c,
+                    "type": ("dropdown" if c in detected_dropdowns else "text"),
+                    "options": detected_dropdowns.get(c, []),
+                    "removed": False
+                })
+            st.session_state.form_config_tmp = cfg
 
-                # option to add new field
-                if st.button("Add New Field"):
-                    st.session_state.working_fields.append({"name": "New Field", "type": "text", "options": []})
+    if "form_config_tmp" not in st.session_state:
+        st.session_state.form_config_tmp = []
+
+    # UI to edit columns
+    df_cfg = pd.DataFrame(st.session_state.form_config_tmp)
+    st.write("Edit columns (add / remove / set type / options). Changes saved locally in session.")
+    edit_col = st.selectbox("Select column to edit (or choose Add New)", ["__ADD_NEW__"] + [c["name"] for c in st.session_state.form_config_tmp])
+    if edit_col == "__ADD_NEW__":
+        new_name = st.text_input("New column name")
+        new_type = st.selectbox("Type", ["text", "dropdown"], key="new_type")
+        new_opts = st.text_area("Options (comma separated, for dropdown only)", key="new_opts")
+        if st.button("Add Column"):
+            if new_name.strip():
+                item = {"name": new_name.strip(), "type": new_type, "options": [o.strip() for o in new_opts.split(",") if o.strip()] if new_type=="dropdown" else [], "removed": False}
+                st.session_state.form_config_tmp.append(item)
+                st.success("Added")
+            else:
+                st.error("Provide a name")
+            st.experimental_rerun()
+    else:
+        # edit existing
+        idx = next((i for i,c in enumerate(st.session_state.form_config_tmp) if c["name"]==edit_col), None)
+        if idx is not None:
+            item = st.session_state.form_config_tmp[idx]
+            with st.form(f"edit_form_{idx}"):
+                item_name = st.text_input("Column name", value=item["name"])
+                item_type = st.selectbox("Type", ["text","dropdown"], index=0 if item["type"]=="text" else 1)
+                opts_str = st.text_area("Options (comma separated)", value=",".join(item.get("options",[])))
+                remove_flag = st.checkbox("Mark as Removed (hide from form)", value=item.get("removed",False))
+                submitted = st.form_submit_button("Save Column")
+                if submitted:
+                    item["name"] = item_name.strip()
+                    item["type"] = item_type
+                    item["options"] = [o.strip() for o in opts_str.split(",") if o.strip()] if item_type=="dropdown" else []
+                    item["removed"] = remove_flag
+                    st.session_state.form_config_tmp[idx] = item
+                    st.success("Saved")
                     st.experimental_rerun()
 
-                # Restore removed
-                if st.session_state.removed_fields:
-                    st.write("Removed fields:")
-                    for ridx, rf in enumerate(st.session_state.removed_fields):
-                        if st.button(f"Restore {rf['name']}", key=f"restore_{ridx}"):
-                            st.session_state.working_fields.append(rf)
-                            st.session_state.removed_fields.pop(ridx)
-                            st.experimental_rerun()
+    st.markdown("**Current columns config**")
+    st.table(pd.DataFrame(st.session_state.form_config_tmp))
 
-                st.markdown("---")
-                # Create form button
-                if st.button("Create & Save Form"):
-                    form_id = uuid.uuid4().hex[:12]
-                    form_def = {
-                        "form_id": form_id,
-                        "created_at": datetime.utcnow().isoformat(),
-                        "fields": st.session_state.working_fields,
-                        "members_count": len(df_members),
-                        "name_col": name_col,
-                        "email_col": email_col,
-                        "members_preview": df_members.head(10).to_dict(orient="records"),
-                    }
-                    save_form_definition(form_id, form_def)
-                    st.success(f"Form saved with ID: {form_id}")
-                    st.write("Next: send links to members or copy links to distribute.")
-                    # prepare links mapping for each member
-                    LINKS.setdefault(form_id, {})
-                    for _, row in df_members.iterrows():
-                        recipient = str(row[email_col]).strip()
-                        recipient_name = str(row[name_col]).strip()
-                        token = generate_token()
-                        LINKS[form_id][recipient] = {"name": recipient_name, "token": token, "sent": False}
-                    persist_links()
-                    st.info("Unique tokens generated for each member and saved. Go to 'Form Link (open/edit)' tab to send links or view them.")
+    st.markdown("---")
+    st.subheader("Finalize Form & Send Links")
+    if st.button("Create Form (generate links for members)"):
+        if not members_df is None and template_file:
+            form_id = uuid.uuid4().hex
+            # assemble config
+            final_cols = [c for c in st.session_state.form_config_tmp if not c.get("removed", False)]
+            form_obj = {
+                "id": form_id,
+                "title": form_title,
+                "description": description,
+                "columns": final_cols,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            save_json(TEMPLATES_DIR / f"{form_id}.json", form_obj)
+            st.success(f"Form created with id `{form_id}`. Now generating links and sending emails...")
 
-    else:
-        st.info("Upload both Members and Template files to create a form.")
+            # create member links
+            members_df_for_links = members_df.copy()
+            links_info = create_member_links(form_id, members_df_for_links, base_url)
+            # Save members with tokens
+            members_store_path = MEMBERS_DIR / f"{form_id}_members.json"
+            save_json(members_store_path, links_info)
 
-# ----------------------------
-# TAB 2: Form Link (open/edit)
-# ----------------------------
-with tabs[1]:
-    st.header("2️⃣ Form Link (open or edit responses)")
-
-    # show existing forms
-    forms = [f[:-5] for f in os.listdir(FORMS_DIR) if f.endswith(".json")]
-    form_choice = st.selectbox("Choose a form to operate on", options=["-- new --"] + forms)
-    if form_choice and form_choice != "-- new --":
-        fid = form_choice
-        form_def = load_form_definition(fid)
-        if not form_def:
-            st.error("Form definition missing.")
+            # attempt to send emails
+            sent_log = load_json(SENT_EMAILS_LOG) or []
+            send_results = []
+            for m in links_info:
+                body = f"Assalamualaikum {m['name'] or ''},\n\nYou have been invited to fill the form: {form_title}\n\nPlease open the link below to fill the form:\n\n{m['link']}\n\nIf you need to edit your response later, use the same link.\n\nRegards."
+                if not sender_email or not sender_pass:
+                    send_results.append({"email": m["email"], "status": "skipped", "reason": "no sender creds"})
+                    continue
+                ok, err = send_email(smtp_server, smtp_port, sender_email, sender_pass, m["email"], f"Fill Form: {form_title}", body)
+                send_results.append({"email": m["email"], "status": "sent" if ok else "failed", "error": err})
+                sent_log.append({"form_id": form_id, "to": m["email"], "status": "sent" if ok else "failed", "error": err, "time": datetime.utcnow().isoformat()})
+            save_json(SENT_EMAILS_LOG, sent_log)
+            st.write(pd.DataFrame(send_results))
+            st.success("Done. Links saved and emails attempted. You can view members & tokens in 'Dashboard / Responses' tab.")
         else:
-            st.subheader(f"Form ID: {fid}")
-            st.write(f"Created at: {form_def.get('created_at')}")
-            st.write("Fields:")
-            st.json(form_def.get("fields"))
+            st.error("Upload both members file and template file first.")
 
-            # show link generation / sending panel
-            st.markdown("### Links for members")
-            this_links = LINKS.get(fid, {})
-            df_links = pd.DataFrame([{"email": k, "name": v["name"], "token": v["token"], "sent": v.get("sent", False)} for k,v in this_links.items()])
-            st.dataframe(df_links)
+# ----------------------------
+# Tab 2: Open Form / Fill (used by members via link)
+# ----------------------------
+with tab_fill:
+    st.header("2) Open Form (fill or edit)")
+    st.info("Open this tab via the personalized link sent in email. Link includes `form_id`, `email` and `token` query parameters.")
 
-            base = APP_BASE_URL.strip().rstrip("/")
-            if not base:
-                st.warning("Set 'App Base URL' in Sidebar to enable emailing direct links. Links will still be shown below for copy/paste.")
-            # option to (re)generate tokens for missing
-            if st.button("Regenerate tokens for all members"):
-                for k in this_links:
-                    LINKS[fid][k]["token"] = generate_token()
-                    LINKS[fid][k]["sent"] = False
-                persist_links()
-                st.success("Tokens regenerated.")
+    # Get params from query
+    form_id_q, email_q, token_q = get_request_params()
+    st.write("Detected query params (for demo):", {"form_id": form_id_q, "email": email_q, "token": token_q})
 
-            # display / copy links
-            st.markdown("#### Member Links (view/edit)")
-            for email, info in this_links.items():
-                token = info["token"]
-                if base:
-                    link = f"{base}?form_id={fid}&token={token}"
-                else:
-                    link = f"?form_id={fid}&token={token}"
-                cols_link = st.columns([4,1,1])
-                cols_link[0].write(f"**{info['name']}** — {email}")
-                cols_link[0].write(link)
-                if cols_link[1].button("Copy Link", key=f"copy_{email}"):
-                    st.experimental_set_query_params(form_id=fid, token=token)  # assistive, affects user's URL
-                    st.success("Set in your browser URL bar (for quick test).")
-                if cols_link[2].button("Resend Email", key=f"resend_{email}"):
-                    # send email now
-                    if not (SENDER_EMAIL and SENDER_PASS and base):
-                        st.error("Provide sender email, password and App Base URL in Sidebar to send emails.")
-                    else:
-                        subject = f"Please fill the form: {fid}"
-                        body = f"Hello {info['name']},\n\nPlease fill the form using the link below:\n\n{link}\n\nYou can edit your response using the same link.\n\nThanks."
-                        ok, msg = send_email_smtp(SENDER_EMAIL, SENDER_PASS, email, subject, body)
-                        if ok:
-                            LINKS[fid][email]["sent"] = True
-                            persist_links()
-                            st.success(f"Email sent to {email}")
-                        else:
-                            st.error(f"Failed to send: {msg}")
-
-            # bulk send
-            if st.button("Send links to ALL members"):
-                if not (SENDER_EMAIL and SENDER_PASS and base):
-                    st.error("Provide sender email, password and App Base URL in Sidebar to send emails.")
-                else:
-                    successes = 0
-                    failures = []
-                    for email, info in this_links.items():
-                        link = f"{base}?form_id={fid}&token={info['token']}"
-                        subject = f"Please fill the form: {fid}"
-                        body = f"Hello {info['name']},\n\nPlease fill the form using the link below:\n\n{link}\n\nYou can edit your response using the same link.\n\nThanks."
-                        ok, msg = send_email_smtp(SENDER_EMAIL, SENDER_PASS, email, subject, body)
-                        if ok:
-                            LINKS[fid][email]["sent"] = True
-                            successes += 1
-                        else:
-                            failures.append({"email": email, "error": msg})
-                    persist_links()
-                    st.success(f"Emails sent: {successes}. Failures: {len(failures)}")
-                    if failures:
-                        st.write(failures)
-
-    # Show form when accessed via query params (simulate member visiting link)
-    params = st.experimental_get_query_params()
-    if "form_id" in params and "token" in params:
-        fid = params["form_id"][0]
-        token = params["token"][0]
-        form_def = load_form_definition(fid)
-        if not form_def:
+    if not form_id_q:
+        st.warning("No `form_id` in URL. To test, click a generated link from the Create tab or manually add `?form_id=...&email=...&token=...` to the URL.")
+    else:
+        # load template
+        template_path = TEMPLATES_DIR / f"{form_id_q}.json"
+        template = load_json(template_path)
+        if not template:
             st.error("Form not found.")
         else:
-            # find member by token
-            member_email = None
-            member_name = None
-            for email, info in LINKS.get(fid, {}).items():
-                if info.get("token") == token:
-                    member_email = email
-                    member_name = info.get("name")
-                    break
-            if not member_email:
-                st.error("Invalid token.")
-            else:
-                st.header(f"Form: {fid} — for {member_name} ({member_email})")
-                # check if response already exists for this token (we'll use resp_id = token)
-                resp_id = token
-                resp_path = os.path.join(RESP_DIR, f"{fid}__{resp_id}.json")
-                existing = None
-                if os.path.exists(resp_path):
-                    with open(resp_path, "r") as f:
-                        existing = json.load(f)
+            st.subheader(template.get("title", "Form"))
+            st.write(template.get("description", ""))
+            # load members to validate token (optional)
+            members_path = MEMBERS_DIR / f"{form_id_q}_members.json"
+            members = load_json(members_path) or []
+            member_entry = next((m for m in members if m["email"]==email_q and m["token"]==token_q), None) if email_q and token_q else None
 
-                with st.form("member_form"):
-                    form_values = {}
-                    for fld in form_def["fields"]:
-                        fname = fld["name"]
-                        if fld["type"] == "select":
-                            # if existing value present, set default
-                            default = existing.get(fname) if existing else None
-                            form_values[fname] = st.selectbox(fname, options=[""] + fld["options"], index=0 if not default else fld["options"].index(default)+1)
-                        else:
-                            default = existing.get(fname) if existing else ""
-                            form_values[fname] = st.text_input(fname, value=default)
-                    submitted = st.form_submit_button("Submit / Save")
-                    if submitted:
-                        payload = {
-                            "form_id": fid,
-                            "resp_id": resp_id,
-                            "email": member_email,
-                            "name": member_name,
-                            "submitted_at": datetime.utcnow().isoformat(),
-                            "answers": form_values
-                        }
-                        save_response(fid, resp_id, payload)
-                        st.success("✅ Response saved.")
-                        # send confirmation email to member
-                        if SENDER_EMAIL and SENDER_PASS:
-                            body = f"Hello {member_name},\n\nWe received your response for form {fid}.\n\nThanks."
-                            ok, msg = send_email_smtp(SENDER_EMAIL, SENDER_PASS, member_email, f"Confirmation - Form {fid}", body)
+            if not member_entry:
+                st.warning("No matching member token found. You may still fill the form, but editing later will require this exact token+email link.")
+
+            # check for existing response for this token
+            resp_file = RESPONSES_DIR / f"{form_id_q}_{token_q or 'anon'}.json" if token_q else None
+            existing_resp = load_json(resp_file) if resp_file and resp_file.exists() else None
+
+            with st.form("response_form"):
+                # render fields
+                responses = {}
+                for col in template["columns"]:
+                    name = col["name"]
+                    if col["type"] == "dropdown":
+                        options = col.get("options", [])
+                        default = existing_resp.get(name) if existing_resp else None
+                        responses[name] = st.selectbox(name, [""] + options, index=(options.index(default)+1) if default in options else 0)
+                    else:
+                        default = existing_resp.get(name) if existing_resp else ""
+                        responses[name] = st.text_input(name, value=default or "")
+                submitted = st.form_submit_button("Submit Response")
+                if submitted:
+                    # save response
+                    record = {
+                        "form_id": form_id_q,
+                        "token": token_q or uuid.uuid4().hex,
+                        "email": email_q,
+                        "data": responses,
+                        "submitted_at": datetime.utcnow().isoformat()
+                    }
+                    # write to RESPONSES_DIR
+                    token_val = record["token"]
+                    save_json(RESPONSES_DIR / f"{form_id_q}_{token_val}.json", record)
+                    st.success("Response saved. Thank you!")
+
+                    # send confirmation emails
+                    # to respondent
+                    if email_q:
+                        body_user = f"Thank you for submitting the form '{template.get('title')}'. Your responses:\n\n"
+                        for k,v in responses.items():
+                            body_user += f"{k}: {v}\n"
+                        body_user += f"\nYou can edit your response using the same link."
+                        if sender_email and sender_pass:
+                            ok, err = send_email(smtp_server, smtp_port, sender_email, sender_pass, email_q, f"Confirmation: {template.get('title')}", body_user)
                             if ok:
-                                st.info("Confirmation email sent.")
+                                st.info("Confirmation email sent to respondent.")
                             else:
-                                st.warning(f"Could not send confirmation email: {msg}")
+                                st.warning(f"Could not send confirmation email: {err}")
                         else:
-                            st.info("No sender credentials provided — confirmation email not sent.")
+                            st.info("No sender credentials provided; confirmation email not sent.")
+
+                    # to form owner/sender
+                    if sender_email:
+                        owner_body = f"New response received for form '{template.get('title')}' from {email_q or 'Unknown'}:\n\n"
+                        for k,v in responses.items():
+                            owner_body += f"{k}: {v}\n"
+                        if sender_email and sender_pass:
+                            ok, err = send_email(smtp_server, smtp_port, sender_email, sender_pass, sender_email, f"New response: {template.get('title')}", owner_body)
+                            if ok:
+                                st.info("Notification email sent to owner.")
+                            else:
+                                st.warning(f"Owner notification not sent: {err}")
 
 # ----------------------------
-# TAB 3: Dashboard / Responses
+# Tab 3: Dashboard / Responses
 # ----------------------------
-with tabs[2]:
-    st.header("3️⃣ Dashboard - Forms & Responses")
-    # list forms
-    forms = [f[:-5] for f in os.listdir(FORMS_DIR) if f.endswith(".json")]
-    if not forms:
-        st.info("No forms created yet.")
+with tab_dash:
+    st.header("3) Dashboard - Forms, Members & Responses")
+    # list templates
+    templates = list(TEMPLATES_DIR.glob("*.json"))
+    t_select = st.selectbox("Select Form", ["-- choose --"] + [t.stem for t in templates])
+    if t_select and t_select != "-- choose --":
+        form_id = t_select
+        tpl = load_json(TEMPLATES_DIR / f"{form_id}.json")
+        st.subheader(tpl.get("title"))
+        st.write("Description:", tpl.get("description"))
+        st.markdown("**Columns**")
+        st.table(pd.DataFrame(tpl.get("columns",[])))
+
+        # members
+        members_path = MEMBERS_DIR / f"{form_id}_members.json"
+        members = load_json(members_path) or []
+        st.markdown("**Members & Tokens**")
+        if members:
+            st.dataframe(pd.DataFrame(members))
+        else:
+            st.info("No members recorded for this form (maybe not emailed yet).")
+
+        # responses
+        st.markdown("**Responses**")
+        resp_files = list(RESPONSES_DIR.glob(f"{form_id}_*.json"))
+        if resp_files:
+            all_resps = []
+            for rf in resp_files:
+                r = load_json(rf)
+                flattened = {"token": r.get("token"), "email": r.get("email"), "submitted_at": r.get("submitted_at")}
+                flattened.update(r.get("data", {}))
+                all_resps.append(flattened)
+            df_resps = pd.DataFrame(all_resps)
+            st.dataframe(df_resps)
+
+            # allow export
+            if st.button("Export responses to Excel"):
+                out_df = df_resps.copy()
+                out_path = BASE / f"{form_id}_responses_export.xlsx"
+                out_df.to_excel(out_path, index=False)
+                st.success(f"Exported to `{out_path}`")
+
+            # allow select response to edit
+            sel_token = st.selectbox("Select token to edit", ["-- select --"] + [r.get("token") for r in all_resps])
+            if sel_token and sel_token != "-- select --":
+                target_file = RESPONSES_DIR / f"{form_id}_{sel_token}.json"
+                target = load_json(target_file)
+                st.markdown("Edit response fields below and Save.")
+                if target:
+                    edit_form = st.form("edit_response_form")
+                    new_data = {}
+                    for col in tpl.get("columns", []):
+                        if col.get("type") == "dropdown":
+                            new_data[col["name"]] = edit_form.selectbox(col["name"], [""] + col.get("options", []), index=0 if not target["data"].get(col["name"]) else (col.get("options",[]).index(target["data"].get(col["name"]))+1))
+                        else:
+                            new_data[col["name"]] = edit_form.text_input(col["name"], value=target["data"].get(col["name"], ""))
+                    save_edit = edit_form.form_submit_button("Save edited response")
+                    if save_edit:
+                        target["data"] = new_data
+                        target["edited_at"] = datetime.utcnow().isoformat()
+                        save_json(target_file, target)
+                        st.success("Saved edited response.")
+                        st.experimental_rerun()
+        else:
+            st.info("No responses yet.")
+
+    st.markdown("---")
+    st.subheader("Sent Emails Log")
+    sent_log = load_json(SENT_EMAILS_LOG) or []
+    if sent_log:
+        st.dataframe(pd.DataFrame(sent_log))
     else:
-        sel_form = st.selectbox("Select form", options=forms)
-        if sel_form:
-            form_def = load_form_definition(sel_form)
-            st.subheader(f"Form {sel_form}")
-            st.write("Fields:")
-            st.json(form_def.get("fields"))
-            st.write("Members preview:")
-            st.write(form_def.get("members_preview", []))
-
-            # list responses
-            responses = load_responses_for_form(sel_form)
-            if not responses:
-                st.info("No responses yet.")
-            else:
-                # flatten answers into dataframe
-                rows = []
-                for r in responses:
-                    base = {"form_id": r.get("form_id"), "resp_id": r.get("resp_id"), "name": r.get("name"), "email": r.get("email"), "submitted_at": r.get("submitted_at")}
-                    answers = r.get("answers", {})
-                    base.update(answers)
-                    rows.append(base)
-                df_resp = pd.DataFrame(rows)
-                st.dataframe(df_resp)
-
-                # export CSV
-                csv = df_resp.to_csv(index=False).encode("utf-8")
-                st.download_button("Download responses as CSV", csv, file_name=f"responses_{sel_form}.csv", mime="text/csv")
-
-                # allow select a response to edit
-                resp_ids = df_resp["resp_id"].tolist()
-                chosen = st.selectbox("Select response to edit/view", options=resp_ids)
-                if chosen:
-                    rfile = os.path.join(RESP_DIR, f"{sel_form}__{chosen}.json")
-                    if os.path.exists(rfile):
-                        with open(rfile, "r") as f:
-                            rdata = json.load(f)
-                        st.json(rdata)
-                        if st.button("Delete this response"):
-                            os.remove(rfile)
-                            st.success("Response deleted.")
-                            st.experimental_rerun()
-
-            # option to delete or reset form
-            if st.button("Delete Form (and all responses)"):
-                # remove form file
-                os.remove(os.path.join(FORMS_DIR, f"{sel_form}.json"))
-                # remove responses
-                for fname in os.listdir(RESP_DIR):
-                    if fname.startswith(sel_form + "__"):
-                        os.remove(os.path.join(RESP_DIR, fname))
-                # remove links entry
-                if sel_form in LINKS:
-                    LINKS.pop(sel_form)
-                    persist_links()
-                st.success("Form and responses deleted.")
-                st.experimental_rerun()
+        st.info("No emails logged yet.")
