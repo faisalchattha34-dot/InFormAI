@@ -110,7 +110,7 @@ if meta.get("forms"):
         emails_text = st.sidebar.text_area("Enter emails (comma separated)")
         if st.sidebar.button("Send Form"):
             emails = [e.strip() for e in emails_text.split(",") if e.strip()]
-            link = f"http://localhost:8501/?form_id={form_id}"  # Update for deployment
+            link = f"http://localhost:8501/?form_id={form_id}"  # Update with deployed URL
             for email in emails:
                 send_email(email, link)
             st.sidebar.success(f"Form sent to {len(emails)} emails.")
@@ -159,6 +159,7 @@ else:
         fids = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
         responses = responses[responses["form_id"].isin(fids)]
     
+    # Loop through each response
     for idx, row in responses.iterrows():
         st.markdown(f"**Response ID:** {row['response_id']}  |  Submitted: {row['timestamp']}")
         data_dict = row["data"]
@@ -167,10 +168,19 @@ else:
         with cols[0]:
             # Editable fields
             for key in data_dict:
-                new_val = st.text_input(f"{key}", value=data_dict[key], key=f"{row['response_id']}_{key}")
+                new_val = st.text_input(
+                    f"{key}", 
+                    value=data_dict[key], 
+                    key=f"{row['response_id']}_{key}"
+                )
                 data_dict[key] = new_val
+
+        # Buttons with unique keys
+        save_key = f"save_{row['response_id']}"
+        delete_key = f"delete_{row['response_id']}"
+        
         with cols[1]:
-            if st.button("Save", key=f"save_{row['response_id']}"):
+            if st.button("Save", key=save_key):
                 response_data = {
                     "form_id": row["form_id"],
                     "response_id": row["response_id"],
@@ -180,9 +190,15 @@ else:
                 with open(f"responses/{row['response_id']}.json", "w") as f:
                     json.dump(response_data, f, indent=4)
                 st.success("Response updated!")
-                st.experimental_rerun()
+                st.session_state['rerun_flag'] = True
+
         with cols[2]:
-            if st.button("Delete", key=f"delete_{row['response_id']}"):
+            if st.button("Delete", key=delete_key):
                 os.remove(f"responses/{row['response_id']}.json")
                 st.success("Response deleted!")
-                st.experimental_rerun()
+                st.session_state['rerun_flag'] = True
+
+# Rerun outside loop
+if st.session_state.get('rerun_flag'):
+    st.session_state['rerun_flag'] = False
+    st.experimental_rerun()
