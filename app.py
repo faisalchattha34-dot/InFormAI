@@ -1,166 +1,105 @@
 import streamlit as st
+import pandas as pd
+
+st.set_page_config(page_title="Form Builder", layout="wide")
+
+st.title("🧩 Excel → Form Builder")
 
 # ----------------------------
-# PAGE CONFIG
+# SESSION STATE
 # ----------------------------
-st.set_page_config(
-    page_title="Formlify – SaaS Dashboard",
-    page_icon="📄",
-    layout="wide"
-)
+if "fields" not in st.session_state:
+    st.session_state.fields = []
 
 # ----------------------------
-# SESSION STATE (Mock Auth)
+# EXCEL UPLOAD
 # ----------------------------
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+uploaded = st.file_uploader("📤 Upload Excel File", type=["xlsx"])
+
+if uploaded:
+    df = pd.read_excel(uploaded)
+    st.success("Excel loaded successfully!")
+
+    if not st.session_state.fields:
+        for col in df.columns:
+            st.session_state.fields.append({
+                "label": col,
+                "type": "Text",
+                "required": False,
+                "options": ""
+            })
 
 # ----------------------------
-# CSS (SaaS Look)
+# FIELD EDITOR
 # ----------------------------
-st.markdown("""
-<style>
-body {
-    background-color: #f6f7fb;
-}
-.sidebar-title {
-    font-size:22px;
-    font-weight:600;
-    margin-bottom:20px;
-}
-.card {
-    background:white;
-    padding:20px;
-    border-radius:12px;
-    box-shadow:0 4px 12px rgba(0,0,0,0.05);
-}
-.metric {
-    font-size:28px;
-    font-weight:700;
-}
-.label {
-    color:#6b7280;
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown("## ✏️ Form Fields Editor")
 
-# ----------------------------
-# LOGIN PAGE
-# ----------------------------
-def login_page():
-    st.markdown("## 🔐 Login to Formlify")
-    col1, col2, col3 = st.columns([1,2,1])
+for i, field in enumerate(st.session_state.fields):
+    with st.container():
+        c1, c2, c3, c4, c5 = st.columns([3,2,2,1,1])
 
-    with col2:
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        if st.button("Login", use_container_width=True):
-            st.session_state.logged_in = True
-            st.experimental_rerun()
-
-# ----------------------------
-# SIDEBAR
-# ----------------------------
-def sidebar():
-    with st.sidebar:
-        st.markdown("<div class='sidebar-title'>📄 Formlify</div>", unsafe_allow_html=True)
-        page = st.radio(
-            "Navigation",
-            ["Dashboard", "Forms", "Members", "Responses", "Billing", "Settings"]
+        field["label"] = c1.text_input(
+            "Label", field["label"], key=f"label_{i}"
         )
-        st.markdown("---")
-        if st.button("🚪 Logout"):
-            st.session_state.logged_in = False
+
+        field["type"] = c2.selectbox(
+            "Type",
+            ["Text", "Number", "Dropdown"],
+            index=["Text", "Number", "Dropdown"].index(field["type"]),
+            key=f"type_{i}"
+        )
+
+        if field["type"] == "Dropdown":
+            field["options"] = c3.text_input(
+                "Options (comma separated)",
+                field["options"],
+                key=f"opt_{i}"
+            )
+        else:
+            c3.markdown("—")
+
+        field["required"] = c4.checkbox(
+            "Required", field["required"], key=f"req_{i}"
+        )
+
+        # Drag-like ordering
+        if c5.button("⬆", key=f"up_{i}") and i > 0:
+            st.session_state.fields[i-1], st.session_state.fields[i] = \
+                st.session_state.fields[i], st.session_state.fields[i-1]
             st.experimental_rerun()
-    return page
+
+        if c5.button("⬇", key=f"down_{i}") and i < len(st.session_state.fields)-1:
+            st.session_state.fields[i+1], st.session_state.fields[i] = \
+                st.session_state.fields[i], st.session_state.fields[i+1]
+            st.experimental_rerun()
+
+        st.divider()
 
 # ----------------------------
-# DASHBOARD PAGE
+# ADD NEW FIELD
 # ----------------------------
-def dashboard_page():
-    st.markdown("## 📊 Dashboard")
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        st.markdown("<div class='card'><div class='metric'>3</div><div class='label'>Total Forms</div></div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown("<div class='card'><div class='metric'>124</div><div class='label'>Responses</div></div>", unsafe_allow_html=True)
-    with c3:
-        st.markdown("<div class='card'><div class='metric'>89%</div><div class='label'>Completion Rate</div></div>", unsafe_allow_html=True)
-    with c4:
-        st.markdown("<div class='card'><div class='metric'>Pro</div><div class='label'>Current Plan</div></div>", unsafe_allow_html=True)
-
-    st.markdown("### 📈 Activity Overview")
-    st.info("Charts & analytics will appear here")
+st.button("➕ Add New Field", on_click=lambda: st.session_state.fields.append({
+    "label": "New Field",
+    "type": "Text",
+    "required": False,
+    "options": ""
+}))
 
 # ----------------------------
-# FORMS PAGE
+# LIVE PREVIEW
 # ----------------------------
-def forms_page():
-    st.markdown("## 📝 Forms")
-    st.button("➕ Create New Form")
-    st.table({
-        "Form Name": ["HR Hiring", "Student Admission"],
-        "Status": ["Active", "Draft"],
-        "Responses": [45, 0]
-    })
+st.markdown("## 👀 Live Form Preview")
 
-# ----------------------------
-# MEMBERS PAGE
-# ----------------------------
-def members_page():
-    st.markdown("## 👥 Members")
-    st.button("➕ Invite Member")
-    st.table({
-        "Email": ["user1@email.com", "user2@email.com"],
-        "Status": ["Submitted", "Pending"]
-    })
+with st.form("preview_form"):
+    for f in st.session_state.fields:
+        label = f["label"] + (" *" if f["required"] else "")
 
-# ----------------------------
-# RESPONSES PAGE
-# ----------------------------
-def responses_page():
-    st.markdown("## 📥 Responses")
-    st.info("Editable response table will be here")
-    st.button("📤 Export Excel")
+        if f["type"] == "Text":
+            st.text_input(label)
+        elif f["type"] == "Number":
+            st.number_input(label)
+        elif f["type"] == "Dropdown":
+            opts = [o.strip() for o in f["options"].split(",") if o.strip()]
+            st.selectbox(label, opts if opts else ["Option 1"])
 
-# ----------------------------
-# BILLING PAGE
-# ----------------------------
-def billing_page():
-    st.markdown("## 💳 Billing")
-    st.markdown("""
-    **Current Plan:** Pro  
-    **Price:** $15 / month
-    """)
-    st.button("Upgrade Plan")
-
-# ----------------------------
-# SETTINGS PAGE
-# ----------------------------
-def settings_page():
-    st.markdown("## ⚙️ Settings")
-    st.text_input("Organization Name")
-    st.button("Save Settings")
-
-# ----------------------------
-# MAIN ROUTER
-# ----------------------------
-if not st.session_state.logged_in:
-    login_page()
-else:
-    page = sidebar()
-
-    if page == "Dashboard":
-        dashboard_page()
-    elif page == "Forms":
-        forms_page()
-    elif page == "Members":
-        members_page()
-    elif page == "Responses":
-        responses_page()
-    elif page == "Billing":
-        billing_page()
-    elif page == "Settings":
-        settings_page()
+    st.form_submit_button("Submit (Preview)")
