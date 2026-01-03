@@ -17,10 +17,11 @@ st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wi
 st.title("📄 Excel → Web Form + Auto Email SaaS")
 
 # Folders
-if not os.path.exists("forms"): os.makedirs("forms")
-if not os.path.exists("responses"): os.makedirs("responses")
-if not os.path.exists("meta.json"): 
-    with open("meta.json", "w") as f: json.dump({"forms": {}}, f)
+os.makedirs("forms", exist_ok=True)
+os.makedirs("responses", exist_ok=True)
+if not os.path.exists("meta.json"):
+    with open("meta.json", "w") as f:
+        json.dump({"forms": {}}, f)
 
 # ----------------------------
 # Load Meta
@@ -66,14 +67,16 @@ def load_responses():
     for file in all_files:
         with open(f"responses/{file}", "r") as f:
             all_data.append(json.load(f))
-    return pd.DataFrame(all_data)
+    if all_data:
+        return pd.DataFrame(all_data)
+    else:
+        return pd.DataFrame(columns=["form_id", "response_id", "timestamp", "data"])
 
 # ----------------------------
 # 1️⃣ Create New Form
 # ----------------------------
 st.sidebar.header("📋 Create / Manage Forms")
 form_name = st.sidebar.text_input("Form Name")
-
 uploaded_file = st.sidebar.file_uploader("Upload Excel (Columns will become fields)", type=["xlsx"])
 
 if st.sidebar.button("Create Form") and form_name and uploaded_file:
@@ -81,7 +84,6 @@ if st.sidebar.button("Create Form") and form_name and uploaded_file:
     columns = df.columns.tolist()
     form_id = str(uuid.uuid4())
     
-    # Save form structure
     meta["forms"][form_id] = {
         "form_name": form_name,
         "columns": columns,
@@ -89,24 +91,26 @@ if st.sidebar.button("Create Form") and form_name and uploaded_file:
     }
     save_meta(meta)
     
-    # Save blank form template
     with open(f"forms/{form_id}.json", "w") as f:
         json.dump({"fields": columns}, f, indent=4)
     
-    st.success(f"Form '{form_name}' created successfully with fields: {columns}")
+    st.success(f"Form '{form_name}' created with fields: {columns}")
 
 # ----------------------------
 # 2️⃣ Share Form (Email)
 # ----------------------------
 st.sidebar.subheader("📧 Share Form via Email")
 if meta.get("forms"):
-    selected_form = st.sidebar.selectbox("Select Form to Share", [(f["form_name"], fid) for fid, f in meta["forms"].items()])
+    selected_form = st.sidebar.selectbox(
+        "Select Form to Share", 
+        [(f["form_name"], fid) for fid, f in meta["forms"].items()]
+    )
     if selected_form:
         form_label, form_id = selected_form
         emails_text = st.sidebar.text_area("Enter emails (comma separated)")
         if st.sidebar.button("Send Form"):
             emails = [e.strip() for e in emails_text.split(",") if e.strip()]
-            link = f"http://localhost:8501/?form_id={form_id}"  # Replace with your deployed URL
+            link = f"http://localhost:8501/?form_id={form_id}"  # Update for deployment
             for email in emails:
                 send_email(email, link)
             st.sidebar.success(f"Form sent to {len(emails)} emails.")
@@ -126,10 +130,16 @@ if "form_id" in query_params:
             user_data[f] = st.text_input(f)
         if st.button("Submit"):
             response_id = str(uuid.uuid4())
-            response_data = {"form_id": fid, "response_id": response_id, "timestamp": str(datetime.now()), "data": user_data}
+            response_data = {
+                "form_id": fid,
+                "response_id": response_id,
+                "timestamp": str(datetime.now()),
+                "data": user_data
+            }
             with open(f"responses/{response_id}.json", "w") as f:
                 json.dump(response_data, f, indent=4)
             st.success("Response submitted successfully!")
+            st.experimental_rerun()
 
 # ----------------------------
 # 4️⃣ Responses Dashboard
@@ -141,22 +151,38 @@ responses = load_responses()
 if responses.empty:
     st.info("No responses submitted yet.")
 else:
-    form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
+    form_filter = st.selectbox(
+        "Select Form to View Responses:", 
+        ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()]
+    )
     if form_filter != "All":
         fids = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
         responses = responses[responses["form_id"].isin(fids)]
     
-    st.dataframe(responses)
-
-    # Edit / Delete
-    st.markdown("### ⚙️ Manage Responses")
     for idx, row in responses.iterrows():
+        st.markdown(f"**Response ID:** {row['response_id']}  |  Submitted: {row['timestamp']}")
+        data_dict = row["data"]
+        
         cols = st.columns([3,1,1])
         with cols[0]:
-            st.write(row["data"])
+            # Editable fields
+            for key in data_dict:
+                new_val = st.text_input(f"{key}", value=data_dict[key], key=f"{row['response_id']}_{key}")
+                data_dict[key] = new_val
         with cols[1]:
-            if st.button(f"Delete {row['response_id']}"):
-                os.remove(f"responses/{row['response_id']}.json")
+            if st.button("Save", key=f"save_{row['response_id']}"):
+                response_data = {
+                    "form_id": row["form_id"],
+                    "response_id": row["response_id"],
+                    "timestamp": row["timestamp"],
+                    "data": data_dict
+                }
+                with open(f"responses/{row['response_id']}.json", "w") as f:
+                    json.dump(response_data, f, indent=4)
+                st.success("Response updated!")
                 st.experimental_rerun()
         with cols[2]:
-            st.write("")  # Could add edit feature later
+            if st.button("Delete", key=f"delete_{row['response_id']}"):
+                os.remove(f"responses/{row['response_id']}.json")
+                st.success("Response deleted!")
+                st.experimental_rerun()
