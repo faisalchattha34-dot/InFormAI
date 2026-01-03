@@ -1,171 +1,162 @@
 import streamlit as st
 import pandas as pd
+import os
+import json
 import uuid
 from datetime import datetime
+from openpyxl import load_workbook
 from io import BytesIO
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ----------------------------
-# SESSION STATE
+# Setup
 # ----------------------------
-if "forms" not in st.session_state:
-    st.session_state.forms = {}  # {form_id: {...}}
-if "responses" not in st.session_state:
-    st.session_state.responses = []  # list of dicts
-if "current_form_id" not in st.session_state:
-    st.session_state.current_form_id = None
-if "members" not in st.session_state:
-    st.session_state.members = {}  # form_id -> list of emails
-if "edit_response_idx" not in st.session_state:
-    st.session_state.edit_response_idx = None
+st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wide")
+st.title("📄 Excel → Web Form + Auto Email SaaS")
+
+# Folders
+if not os.path.exists("forms"): os.makedirs("forms")
+if not os.path.exists("responses"): os.makedirs("responses")
+if not os.path.exists("meta.json"): 
+    with open("meta.json", "w") as f: json.dump({"forms": {}}, f)
 
 # ----------------------------
-# PAGE NAVIGATION
+# Load Meta
 # ----------------------------
-st.set_page_config(page_title="Formlify SaaS", layout="wide")
-mode = st.sidebar.radio("Mode", ["Admin", "User"])
+def load_meta():
+    with open("meta.json", "r") as f:
+        return json.load(f)
 
-# ----------------------------
-# HELPER FUNCTIONS
-# ----------------------------
+def save_meta(meta):
+    with open("meta.json", "w") as f:
+        json.dump(meta, f, indent=4)
 
-def detect_columns(excel_file):
-    df = pd.read_excel(excel_file)
-    columns = []
-    for c in df.columns:
-        columns.append({"label": str(c), "type": "Text", "required": False, "options": ""})
-    return columns
-
-def get_user_form_link(form_id, user_email):
-    # Unique link simulation
-    return f"{st.get_url()}?mode=User&form_id={form_id}&user_email={user_email}"
+meta = load_meta()
 
 # ----------------------------
-# ADMIN MODE
+# Helper Functions
 # ----------------------------
-if mode == "Admin":
-    st.title("🧑‍💼 Admin Panel")
+def send_email(receiver_email, form_link):
+    sender_email = "your_email@example.com"
+    sender_pass = "your_email_password"
+    
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = "Please fill the form"
+    body = f"Please fill this form: {form_link}"
+    msg.attach(MIMEText(body, 'plain'))
+    
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_email, sender_pass)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Email failed: {e}")
+        return False
 
-    # ------------------------
-    # Upload Form + Members
-    # ------------------------
-    st.subheader("📄 Create New Form")
-    form_name = st.text_input("Form Name", f"My Form {datetime.now().strftime('%Y-%m-%d')}")
+def load_responses():
+    all_files = os.listdir("responses")
+    all_data = []
+    for file in all_files:
+        with open(f"responses/{file}", "r") as f:
+            all_data.append(json.load(f))
+    return pd.DataFrame(all_data)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        form_file = st.file_uploader("Upload Form Excel", type=["xlsx"])
-    with col2:
-        members_file = st.file_uploader("Upload Members Email List", type=["xlsx"])
+# ----------------------------
+# 1️⃣ Create New Form
+# ----------------------------
+st.sidebar.header("📋 Create / Manage Forms")
+form_name = st.sidebar.text_input("Form Name")
 
-    if st.button("🚀 Create Form & Detect Columns"):
-        if not form_file or not members_file:
-            st.error("Please upload both files.")
-        else:
-            # Detect form columns
-            columns = detect_columns(form_file)
-            # Load members
-            df_members = pd.read_excel(members_file)
-            emails = df_members["Email"].dropna().unique().tolist()
-            form_id = str(uuid.uuid4())[:8]
-            st.session_state.forms[form_id] = {
-                "name": form_name,
-                "columns": columns,
-                "created_at": datetime.now(),
-            }
-            st.session_state.members[form_id] = emails
-            st.session_state.current_form_id = form_id
-            st.success(f"Form created! ID: {form_id}")
+uploaded_file = st.sidebar.file_uploader("Upload Excel (Columns will become fields)", type=["xlsx"])
 
-    # ------------------------
-    # Column & Form Editing
-    # ------------------------
-    if st.session_state.current_form_id:
-        st.subheader("✏️ Form Columns")
-        columns = st.session_state.forms[st.session_state.current_form_id]["columns"]
-        for i, col in enumerate(columns):
-            c1, c2, c3, c4, c5 = st.columns([3,2,1,1,1])
-            col["label"] = c1.text_input("Label", col["label"], key=f"label_{i}")
-            col["type"] = c2.selectbox("Type", ["Text","Number","Dropdown"], index=["Text","Number","Dropdown"].index(col["type"]), key=f"type_{i}")
-            if col["type"] == "Dropdown":
-                col["options"] = c3.text_input("Options (comma separated)", col["options"], key=f"opt_{i}")
-            col["required"] = c4.checkbox("Required", col["required"], key=f"req_{i}")
-            if c5.button("🗑 Delete", key=f"del_{i}"):
-                columns.pop(i)
+if st.sidebar.button("Create Form") and form_name and uploaded_file:
+    df = pd.read_excel(uploaded_file)
+    columns = df.columns.tolist()
+    form_id = str(uuid.uuid4())
+    
+    # Save form structure
+    meta["forms"][form_id] = {
+        "form_name": form_name,
+        "columns": columns,
+        "created_at": str(datetime.now())
+    }
+    save_meta(meta)
+    
+    # Save blank form template
+    with open(f"forms/{form_id}.json", "w") as f:
+        json.dump({"fields": columns}, f, indent=4)
+    
+    st.success(f"Form '{form_name}' created successfully with fields: {columns}")
+
+# ----------------------------
+# 2️⃣ Share Form (Email)
+# ----------------------------
+st.sidebar.subheader("📧 Share Form via Email")
+if meta.get("forms"):
+    selected_form = st.sidebar.selectbox("Select Form to Share", [(f["form_name"], fid) for fid, f in meta["forms"].items()])
+    if selected_form:
+        form_label, form_id = selected_form
+        emails_text = st.sidebar.text_area("Enter emails (comma separated)")
+        if st.sidebar.button("Send Form"):
+            emails = [e.strip() for e in emails_text.split(",") if e.strip()]
+            link = f"http://localhost:8501/?form_id={form_id}"  # Replace with your deployed URL
+            for email in emails:
+                send_email(email, link)
+            st.sidebar.success(f"Form sent to {len(emails)} emails.")
+
+# ----------------------------
+# 3️⃣ Fill Form
+# ----------------------------
+query_params = st.experimental_get_query_params()
+if "form_id" in query_params:
+    fid = query_params["form_id"][0]
+    form = meta["forms"].get(fid)
+    if form:
+        st.subheader(f"📝 {form['form_name']}")
+        fields = form["columns"]
+        user_data = {}
+        for f in fields:
+            user_data[f] = st.text_input(f)
+        if st.button("Submit"):
+            response_id = str(uuid.uuid4())
+            response_data = {"form_id": fid, "response_id": response_id, "timestamp": str(datetime.now()), "data": user_data}
+            with open(f"responses/{response_id}.json", "w") as f:
+                json.dump(response_data, f, indent=4)
+            st.success("Response submitted successfully!")
+
+# ----------------------------
+# 4️⃣ Responses Dashboard
+# ----------------------------
+st.markdown("---")
+st.subheader("📊 Responses Dashboard")
+responses = load_responses()
+
+if responses.empty:
+    st.info("No responses submitted yet.")
+else:
+    form_filter = st.selectbox("Select Form to View Responses:", ["All"] + [f["form_name"] for f in meta.get("forms", {}).values()])
+    if form_filter != "All":
+        fids = [fid for fid, f in meta["forms"].items() if f["form_name"] == form_filter]
+        responses = responses[responses["form_id"].isin(fids)]
+    
+    st.dataframe(responses)
+
+    # Edit / Delete
+    st.markdown("### ⚙️ Manage Responses")
+    for idx, row in responses.iterrows():
+        cols = st.columns([3,1,1])
+        with cols[0]:
+            st.write(row["data"])
+        with cols[1]:
+            if st.button(f"Delete {row['response_id']}"):
+                os.remove(f"responses/{row['response_id']}.json")
                 st.experimental_rerun()
-        if st.button("➕ Add New Column"):
-            columns.append({"label":"New Field","type":"Text","required":False,"options":""})
-            st.experimental_rerun()
-
-        st.markdown("### 👀 Form Preview")
-        with st.form("preview_form"):
-            for f in columns:
-                label = f"{f['label']} {'*' if f['required'] else ''}"
-                if f["type"]=="Text":
-                    st.text_input(label)
-                elif f["type"]=="Number":
-                    st.number_input(label)
-                elif f["type"]=="Dropdown":
-                    opts = [o.strip() for o in f["options"].split(",") if o.strip()]
-                    st.selectbox(label, opts if opts else ["Option 1"])
-            st.form_submit_button("Submit (Preview)")
-
-    # ------------------------
-    # Responses Dashboard
-    # ------------------------
-    st.subheader("📊 Responses Dashboard")
-    if st.session_state.responses:
-        df_resp = pd.DataFrame(st.session_state.responses)
-        st.dataframe(df_resp)
-        # Edit/Delete simulation
-        for idx, row in df_resp.iterrows():
-            col1, col2 = st.columns([1,1])
-            if col1.button(f"✏️ Edit {idx}"):
-                st.session_state.edit_response_idx = idx
-            if col2.button(f"🗑 Delete {idx}"):
-                st.session_state.responses.pop(idx)
-                st.experimental_rerun()
-        if st.session_state.edit_response_idx is not None:
-            st.markdown(f"### Editing Response #{st.session_state.edit_response_idx}")
-            row = st.session_state.responses[st.session_state.edit_response_idx]
-            for key in row:
-                row[key] = st.text_input(key, str(row[key]))
-            if st.button("💾 Save Changes"):
-                st.session_state.responses[st.session_state.edit_response_idx] = row
-                st.session_state.edit_response_idx = None
-                st.experimental_rerun()
-
-# ----------------------------
-# USER MODE
-# ----------------------------
-elif mode == "User":
-    params = st.experimental_get_query_params()
-    form_id = params.get("form_id",[None])[0]
-    user_email = params.get("user_email",[None])[0]
-
-    if not form_id or form_id not in st.session_state.forms:
-        st.warning("Invalid form ID.")
-    else:
-        form = st.session_state.forms[form_id]
-        st.title(f"🧾 {form['name']}")
-        st.subheader(f"Welcome: {user_email}")
-
-        with st.form("user_fill_form"):
-            user_data = {}
-            for f in form["columns"]:
-                label = f["label"] + (" *" if f["required"] else "")
-                if f["type"]=="Text":
-                    user_data[label] = st.text_input(label)
-                elif f["type"]=="Number":
-                    user_data[label] = st.number_input(label)
-                elif f["type"]=="Dropdown":
-                    opts = [o.strip() for o in f["options"].split(",") if o.strip()]
-                    user_data[label] = st.selectbox(label, opts if opts else ["Option 1"])
-            submitted = st.form_submit_button("✅ Submit Form")
-            if submitted:
-                st.session_state.responses.append({
-                    "FormID": form_id,
-                    "Email": user_email,
-                    "SubmittedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    **user_data
-                })
-                st.success("Form submitted successfully!")
+        with cols[2]:
+            st.write("")  # Could add edit feature later
