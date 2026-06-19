@@ -4,191 +4,193 @@ import os
 import json
 import uuid
 from datetime import datetime
+from openpyxl import load_workbook
+from io import BytesIO
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# =========================
-# CONFIG
-# =========================
-st.set_page_config(page_title="📄 Excel Form SaaS PRO", layout="wide")
-st.title("📄 Excel → Web Form + Email SaaS (FIXED)")
+# ----------------------------
+# Setup
+# ----------------------------
+st.set_page_config(page_title="📄 Excel → Web Form + Auto Email", layout="wide")
+st.title("📄 Excel → Web Form + Auto Email Sender + Dashboard")
 
-RESP_FILE = "responses.xlsx"
-META_FILE = "meta.json"
+# ----------------------------
+# Paths
+# ----------------------------
+DATA_DIR = "data_store"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# =========================
-# INIT FILES
-# =========================
-if not os.path.exists(META_FILE):
-    with open(META_FILE, "w") as f:
-        json.dump({"forms": {}}, f)
+META_PATH = os.path.join(DATA_DIR, "meta.json")
+ALL_RESPONSES_PATH = os.path.join(DATA_DIR, "all_responses.xlsx")
 
-if not os.path.exists(RESP_FILE):
-    df_init = pd.DataFrame(columns=["form_id", "response_id", "timestamp", "data"])
-    df_init.to_excel(RESP_FILE, index=False)
-
-# =========================
-# LOAD META
-# =========================
+# ----------------------------
+# Meta Safe Load
+# ----------------------------
 def load_meta():
-    with open(META_FILE, "r") as f:
-        return json.load(f)
+    if os.path.exists(META_PATH):
+        with open(META_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"forms": {}}
 
 def save_meta(meta):
-    with open(META_FILE, "w") as f:
-        json.dump(meta, f, indent=4)
+    with open(META_PATH, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
 
 meta = load_meta()
 
-# =========================
-# LOAD / SAVE RESPONSES
-# =========================
+# ----------------------------
+# Responses Safe Load/Save
+# ----------------------------
 def load_responses():
-    return pd.read_excel(RESP_FILE)
+    if os.path.exists(ALL_RESPONSES_PATH):
+        return pd.read_excel(ALL_RESPONSES_PATH)
+    return pd.DataFrame()
 
 def save_responses(df):
-    df.to_excel(RESP_FILE, index=False)
+    df.to_excel(ALL_RESPONSES_PATH, index=False)
 
-# =========================
-# SMTP EMAIL
-# =========================
-def send_email(receiver_email, form_link):
-    sender_email = "your_email@gmail.com"
-    sender_pass = "your_app_password"
+# ----------------------------
+# Query Params (FIX)
+# ----------------------------
+query_params = st.query_params
+mode = query_params.get("mode", "admin")
+form_id = query_params.get("form_id", None)
 
-    msg = MIMEMultipart()
-    msg["From"] = sender_email
-    msg["To"] = receiver_email
-    msg["Subject"] = "Fill this Form"
+# ----------------------------
+# FORM MODE
+# ----------------------------
+if mode == "form":
 
-    body = f"Please fill this form:\n{form_link}"
-    msg.attach(MIMEText(body, "plain"))
+    if not form_id or form_id not in meta.get("forms", {}):
+        st.warning("Invalid form link.")
+        st.stop()
 
-    try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(sender_email, sender_pass)
-        server.send_message(msg)
-        server.quit()
-    except Exception as e:
-        st.error(f"Email failed: {e}")
+    form = meta["forms"][form_id]
 
-# =========================
-# CREATE FORM
-# =========================
-st.sidebar.header("📋 Create Form")
+    st.header(f"🧾 {form['form_name']}")
 
-form_name = st.sidebar.text_input("Form Name")
-uploaded_file = st.sidebar.file_uploader("Upload Excel (Fields)", type=["xlsx"])
+    session_id = st.session_state.get("session_id", str(uuid.uuid4())[:8])
+    st.session_state["session_id"] = session_id
 
-if st.sidebar.button("Create Form"):
-    if form_name and uploaded_file:
-        df = pd.read_excel(uploaded_file)
-        columns = df.columns.tolist()
+    columns = form["columns"]
 
-        form_id = str(uuid.uuid4())
+    with st.form("user_form"):
+        values = {}
+        for col in columns:
+            values[col] = st.text_input(col, key=f"{col}_{session_id}")
 
-        meta["forms"][form_id] = {
-            "name": form_name,
-            "columns": columns,
-            "created_at": str(datetime.now())
+        submit = st.form_submit_button("Submit")
+
+    if submit:
+        df = load_responses()
+
+        row = {
+            "FormID": form_id,
+            "FormName": form["form_name"],
+            "UserSession": session_id,
+            "SubmittedAt": str(datetime.now())
         }
-        save_meta(meta)
+        row.update(values)
 
-        st.sidebar.success(f"Form Created: {form_name}")
-        st.sidebar.write(columns)
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        save_responses(df)
 
-# =========================
-# SHARE FORM
-# =========================
-st.sidebar.header("📧 Send Form")
+        st.success("Saved successfully!")
+        st.rerun()
 
-if meta["forms"]:
-    form_options = {v["name"]: k for k, v in meta["forms"].items()}
-    selected_name = st.sidebar.selectbox("Select Form", list(form_options.keys()))
-    form_id = form_options[selected_name]
+# ----------------------------
+# ADMIN MODE
+# ----------------------------
+else:
 
-    emails = st.sidebar.text_area("Emails (comma separated)")
+    st.header("🧑‍💼 Admin Panel")
 
-    if st.sidebar.button("Send"):
-        email_list = [e.strip() for e in emails.split(",") if e.strip()]
-        link = f"http://localhost:8501/?form_id={form_id}"
+    col1, col2 = st.columns(2)
 
-        for e in email_list:
-            send_email(e, link)
+    with col1:
+        member_file = st.file_uploader("Member Excel (Email column required)", type=["xlsx"])
+    with col2:
+        form_file = st.file_uploader("Form Excel", type=["xlsx"])
 
-        st.sidebar.success("Emails Sent!")
+    if member_file and form_file:
 
-# =========================
-# FORM VIEW
-# =========================
-query = st.experimental_get_query_params()
+        try:
+            df_members = pd.read_excel(member_file)
 
-if "form_id" in query:
-    fid = query["form_id"][0]
+            if "Email" not in df_members.columns:
+                st.error("Email column missing!")
+                st.stop()
 
-    if fid in meta["forms"]:
-        form = meta["forms"][fid]
+            df_form = pd.read_excel(form_file)
 
-        st.subheader(f"📝 {form['name']}")
+            df_form.columns = [str(c).strip() for c in df_form.columns]
 
-        user_data = {}
-        for col in form["columns"]:
-            user_data[col] = st.text_input(col)
+            st.subheader("Form Preview")
+            df_form = st.data_editor(df_form, num_rows="dynamic")
 
-        if st.button("Submit"):
-            df = load_responses()
+            st.session_state["form_df"] = df_form
 
-            new_row = {
-                "form_id": fid,
-                "response_id": str(uuid.uuid4()),
-                "timestamp": str(datetime.now()),
-                "data": json.dumps(user_data)
-            }
+            form_name = st.text_input("Form Name")
+            base_url = st.text_input("App URL")
+            sender = st.text_input("Gmail")
+            password = st.text_input("App Password", type="password")
 
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            def send_email(to, link):
+                msg = MIMEMultipart()
+                msg["From"] = sender
+                msg["To"] = to
+                msg["Subject"] = "Form Link"
+                msg.attach(MIMEText(f"Fill form: {link}", "plain"))
+
+                server = smtplib.SMTP("smtp.gmail.com", 587)
+                server.starttls()
+                server.login(sender, password)
+                server.send_message(msg)
+                server.quit()
+
+            if st.button("Create & Send"):
+
+                form_id_new = str(uuid.uuid4())[:8]
+
+                meta["forms"][form_id_new] = {
+                    "form_name": form_name,
+                    "columns": list(df_form.columns)
+                }
+                save_meta(meta)
+
+                link = f"{base_url}?mode=form&form_id={form_id_new}"
+
+                for email in df_members["Email"].dropna():
+                    try:
+                        send_email(email, link)
+                    except:
+                        pass
+
+                st.success("Form created & emails sent!")
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # ----------------------------
+    # RESPONSES
+    # ----------------------------
+    st.markdown("---")
+    st.subheader("📊 Responses")
+
+    df = load_responses()
+
+    if not df.empty:
+        st.dataframe(df)
+
+        idx = st.selectbox("Select Row Index", df.index)
+
+        if st.button("Delete"):
+            df = df.drop(idx)
             save_responses(df)
-
-            st.success("Submitted Successfully!")
             st.rerun()
 
-# =========================
-# ADMIN DASHBOARD
-# =========================
-st.markdown("---")
-st.subheader("📊 Admin Dashboard")
-
-df = load_responses()
-
-if df.empty:
-    st.info("No responses yet.")
-else:
-    for i, row in df.iterrows():
-        st.markdown(f"**ID:** {row['response_id']} | {row['timestamp']}")
-
-        data = json.loads(row["data"])
-
-        updated = {}
-        cols = st.columns([3, 1, 1])
-
-        with cols[0]:
-            for k, v in data.items():
-                updated[k] = st.text_input(
-                    k,
-                    value=v,
-                    key=f"{row['response_id']}_{k}"
-                )
-
-        with cols[1]:
-            if st.button("Save", key=f"save_{row['response_id']}"):
-                df.loc[i, "data"] = json.dumps(updated)
-                save_responses(df)
-                st.success("Updated!")
-
-        with cols[2]:
-            if st.button("Delete", key=f"del_{row['response_id']}"):
-                df = df[df["response_id"] != row["response_id"]]
-                save_responses(df)
-                st.success("Deleted!")
-                st.rerun()
+        if st.button("Save Edit"):
+            save_responses(df)
+            st.success("Updated")
